@@ -1,0 +1,80 @@
+[tool.pdm]
+distribution = true
+
+[project]
+name = "layoutapply"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "NEC corporation."},
+]
+dependencies = [
+    "jsonschema<5.0.0,>=4.23.0",
+    "uvicorn<1.0.0,>=0.34.0",
+    "fastapi<1.0.0,>=0.115.8",
+    "psycopg2-binary<3.0.0,>=2.9.10",
+    "iso8601<3.0.0,>=2.1.0",
+    "psutil<7.0.0,>=6.1.0",
+    "tenacity<10.0.0,>=9.0.0",
+    "pyyaml<7.0.0,>=6.0.2",
+    "requests<3.0.0,>=2.32.3",
+]
+requires-python = "<4.0,>=3.13"
+readme = "README.md"
+license = {text = "LICENSE"}
+
+[tool.pdm.dev-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "flake8",
+    "pytest-mock",
+    "autopep8",
+    "isort",
+    "pre-commit",
+    "pylint",
+    "black",
+    "pytest-httpserver",
+    "radon",
+    "httpx",
+    "coverage",
+    "pipfile",
+    "pytest-docker",
+    "setuptools",
+]
+
+[tool.pdm.build]
+includes = []
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+
+[project.scripts]
+layoutapply = "layoutapply.cli:main"
+layoutapply-server = "layoutapply.server:main"
+
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.black]
+line-length = 120
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-v --cov --cov-branch tests --cov-report xml --capture=no --cov-report=term-missing --tb=line --cov-fail-under=100"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::SyntaxWarning",
+]
+disable_test_id_escaping_and_forfeit_all_rights_to_community_support = "True"
+
+[tool.coverage.run]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+    "*/src/layoutapply/cdimlogger/*",
+]

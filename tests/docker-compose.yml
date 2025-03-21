@@ -1,0 +1,22 @@
+version: '3.3'
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ApplyStatusDB
+      POSTGRES_USER: user01
+      POSTGRES_PASSWORD: testpw
+    ports:
+      - "0.0.0.0:5435:5432"
+    volumes:
+      - ./init-scripts:/docker-entrypoint-initdb.d
+
+  dapr:
+    image: daprio/daprd:edge
+    command: [ "./daprd", "-app-id", "cdim-layout-apply", "-app-port", "8003", "-dapr-http-port", "3500", "-placement-host-address", "placement:50006", "-config", "/configuration/config.yaml", "-resources-path", "/components" ]
+    ports:
+      - "0.0.0.0:3500:3500"
+    volumes:
+      - "./components/:/components"
+      - "./configuration/:/configuration"
+      - "./secrets/:/secrets"
