@@ -18,7 +18,7 @@ get_list_insert_sql = """
     INSERT into applystatus (
         applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, suspendedat, resumedat
     ) VALUES
-    ('000000001a', 'IN_PROGRESS', null, null, null, '2023/10/02 00:00:00', null, null, null, null, null, null, null, null, null, null, null),
+    ('000000001a', 'IN_PROGRESS', '{\"procedures\": \"pre_test\"}', null, null, '2023/10/02 00:00:00', null, null, null, null, null, null, null, null, null, null, null),
     ('000000002b', 'CANCELING', '{\"procedures\": \"pre_test\"}', '[{\"test\": \"test\"}, {\"test\": \"test\"}]','{\"test\": \"test\"}', '2023/10/01 23:59:59', '2023/10/02 12:23:58', '2023/10/02 12:00:00', TRUE, null, null, null, null, null, null, null, null),
     ('000000003c', 'COMPLETED', '{\"procedures\": \"pre_test\"}', '[{\"test\": \"test\"}, {\"test\": \"test\"}]', null, '2023/10/02 00:00:00', '2023/10/02 12:23:59', null, null, null, null, null, null, null, null, null, null),
     ('000000004d', 'FAILED', '{\"procedures\": \"pre_test\"}', '[{\"test\": \"test\"}, {\"test\": \"test\"}]', null, '2023/10/02 00:00:01', '2023/10/02 12:24:00', null, null, null, null, null, null, null, null, null, null),
@@ -34,7 +34,7 @@ get_list_insert_sql_1 = """
     INSERT into applystatus (
         applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, suspendedat, resumedat
     ) VALUES
-    (%s, 'IN_PROGRESS', null, null, null, '2023/10/02 00:00:00', null, null, null, null, null, null, null, null, null, null, null);
+    (%s, 'IN_PROGRESS', '{\"procedures\": \"pre_test\"}', null, null, '2023/10/02 00:00:00', null, null, null, null, null, null, null, null, null, null, null);
 """
 get_list_insert_sql_2 = """
     INSERT into applystatus (
@@ -95,13 +95,13 @@ get_fields_insert_sql_2 = """
     INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
     )
     VALUES
-    (%s,'IN_PROGRESS',null,null,null,'2023/10/02 00:00:00',null,null,null,null,null,null,null,null,null,null,null,null,null,null);
+    (%s,'IN_PROGRESS','{"procedures": "pre_test"}',null,null,'2023/10/02 00:00:00',null,null,null,null,null,null,null,null,null,null,null,null,null,null);
 """
 get_fields_insert_sql_3 = """
     INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
     )
     VALUES
-    (%s,'CANCELING',null,null,null,'2023/10/02 00:00:00',null,'2023/10/02 12:23:59',null,null,null,null,null,null,null,null,null,null,null,null);
+    (%s,'CANCELING','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',null,'2023/10/02 00:00:00',null,'2023/10/02 12:23:59',null,null,null,null,null,null,null,null,null,null,null,null);
 """
 get_fields_insert_sql_4 = """
     INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
@@ -132,7 +132,7 @@ insert_resumed_get_target_sql_2 = """
     INSERT into applystatus (
         applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, suspendedat, resumedat
     ) VALUES
-    (%s,'CANCELING','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',null,'2023/10/02 00:00:00',null,'2023/10/02 00:00:01',TRUE,null,null,'2023/10/02 00:00:02',null,'{"test": "pre_test"}',null,'2023/10/02 12:23:59','2023/10/03 12:23:59')
+    (%s,'CANCELING','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',null,'2023/10/02 00:00:00',null,'2023/10/02 00:00:01',TRUE,'IN_PROGRESS','[{"test": "test"}, {"test": "test"}]','2023/10/02 00:00:02',null,'{"test": "pre_test"}','[{"test": "test"}]','2023/10/02 12:23:59','2023/10/03 12:23:59')
 """
 insert_resumed_get_target_sql_3 = """
     INSERT into applystatus (
@@ -144,6 +144,12 @@ insert_resumed_get_target_sql_4 = """
     INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
     ) VALUES
     (%s,'CANCELED','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]','{"test": "pre_test"}','2023/10/02 00:00:00','2023/10/02 01:00:00','2023/10/02 00:30:00',TRUE,'SUSPENDED',null,'2023/10/02 00:40:00',null,'[{"operationID": 1, "operation": "shutdown","targetDeviceID": "0001", "dependencies": []}]',null,null,null,null,'2023/10/02 00:50:00',null);
+"""
+insert_resumed_get_target_sql_5 = """
+    INSERT into applystatus (
+        applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, suspendedat, resumedat
+    ) VALUES
+    (%s,'IN_PROGRESS','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',null,'2023/10/02 00:00:00',null,null,null,null,null,null,null,'{"test": "pre_test"}','[{"test": "test"}]','2023/10/02 12:23:59','2023/10/03 12:23:59')
 """
 # Generic data
 insert_status_suspended_sql = """
@@ -180,7 +186,7 @@ insert_delete_target_sql_1 = """
     INSERT into applystatus (
         applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, suspendedat, resumedat
     ) VALUES
-    (%s, 'IN_PROGRESS', null, null, null, '2023/10/02 00:00:00', null, null, null, null, null, null, null, null, null, null, null)
+    (%s, 'IN_PROGRESS', '{"procedures": "pre_test"}', null, null, '2023/10/02 00:00:00', null, null, null, null, null, null, null, null, null, null, null)
 """
 insert_delete_target_sql_2 = """
     INSERT into applystatus (

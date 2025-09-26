@@ -5,11 +5,28 @@ services:
     environment:
       POSTGRES_DB: ApplyStatusDB
       POSTGRES_USER: user01
-      POSTGRES_PASSWORD: testpw
+      POSTGRES_PASSWORD: P@ssw0rd
     ports:
       - "0.0.0.0:5435:5432"
     volumes:
       - ./init-scripts:/docker-entrypoint-initdb.d
+
+  message-broker:
+    container_name: message-broker
+    image: nats:2.10
+    ports:
+      - "4222:4222"
+    command: ["-js",  "-c", "/server.conf" ] 
+    volumes:
+      - "./message-broker/server.conf:/server.conf"
+      - message-broker:/data/nats/jetstream
+
+  message-broker-init:
+    image: natsio/nats-box:latest
+    depends_on:
+      - message-broker
+    command: >
+      nats stream add layout_apply_apply --subjects=layout_apply_apply.completed --server=nats://message-broker:4222 --storage=file --retention=limits --max-msgs=-1 --max-bytes=-1 --max-age=0s --dupe-window=2m --defaults
 
   dapr:
     image: daprio/daprd:edge
@@ -20,3 +37,8 @@ services:
       - "./components/:/components"
       - "./configuration/:/configuration"
       - "./secrets/:/secrets"
+    depends_on:
+      - message-broker
+
+volumes:
+  message-broker:

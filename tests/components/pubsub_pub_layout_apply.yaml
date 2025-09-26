@@ -1,0 +1,14 @@
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: layout_apply_apply
+spec:
+  type: pubsub.jetstream
+  version: v1
+  metadata:
+  - name: natsURL
+    value: "nats://message-broker:4222"
+  - name: streamName
+    value: "layout_apply_apply"
+  - name: subjects
+    value: "layout.apply.apply.completed"

@@ -14,14 +14,16 @@
 """Test for command"""
 
 import copy
+import io
 import json
+import logging
+import logging.config
 import os
 import re
 import secrets
 import string
 import sys
 import tempfile
-from logging import DEBUG, ERROR
 from multiprocessing import Process
 from time import sleep
 
@@ -31,21 +33,23 @@ import pytest
 from psycopg2.extras import DictCursor
 from werkzeug import Response
 
-from layoutapply.cdimlogger import Logger
 from layoutapply.cli import LayoutApplyCommandLine, main
+from layoutapply.common.logger import Logger
 from layoutapply.const import Action, ExitCode, IdParameter, Result
 from layoutapply.custom_exceptions import SettingFileLoadException
 from layoutapply.db import DbAccess
 from layoutapply.main import run
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 from layoutapply.util import create_randomname
 from tests.layoutapply.conftest import (
     DEVICE_INFO_URL,
+    EXTENDED_PROCEDURE_URI,
     GET_INFORMATION_URI,
     HARDWARE_CONTROL_URI,
     OPERATION_URL,
     OS_BOOT_URL,
     POWER_OPERATION_URL,
+    WORKFLOW_MANAGER_PORT,
 )
 from tests.layoutapply.test_data import checkvalid, procedure, sql
 
@@ -54,7 +58,7 @@ BASE_CONFIG = {
     "db": {
         "dbname": "layoutapply",
         "user": "user01",
-        "password": "testpw",
+        "password": "P@ssw0rd",
         "host": "localhost",
         "port": 5435,
     },
@@ -84,10 +88,28 @@ BASE_CONFIG = {
             "timeout": 10,
         },
     },
+    "workflow_manager": {
+        "host": "localhost",
+        "port": 8008,
+        "uri": "cdim/api/v1",
+        "extended-procedure": {
+            "retry": {
+                "default": {
+                    "interval": 5,
+                    "max_count": 5,
+                },
+            },
+            "polling": {
+                "count": 5,
+                "interval": 1,
+            },
+        },
+        "timeout": 5,
+    },
     "hardware_control": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "disconnect": {
             "retry": {
                 "targets": [
@@ -122,25 +144,55 @@ BASE_CONFIG = {
             "timeout": 10,
         },
     },
-    "log": {
-        "logging_level": "INFO",
-        "log_dir": "./",
-        "file": "app_layout_apply.log",
-        "rotation_size": 1000000,
-        "backup_files": 3,
-        "stdout": False,
-    },
     "migration_procedure_generator": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "timeout": 30,
     },
     "configuration_manager": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "timeout": 30,
+    },
+    "message_broker": {
+        "host": "localhost",
+        "port": 3500,
+        "pubsub": "layout_apply_apply",
+        "topic": "layout_apply_apply.completed",
+    },
+}
+
+
+LOG_BASE_CONFIG = {
+    "version": 1,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)s %(message)s",
+            "datefmt": "%Y/%m/%d %H:%M:%S.%f",
+        }
+    },
+    "handlers": {
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "INFO",
+            "formatter": "standard",
+            "filename": "/var/log/cdim/app_layout_apply.log",
+            "maxBytes": 100000000,
+            "backupCount": 72,
+            "encoding": "utf-8",
+        },
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+            "formatter": "standard",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "root": {
+        "level": "INFO",
+        "handlers": ["file"],
     },
 }
 
@@ -153,6 +205,7 @@ get_list_assert_target = {
             "applyID": "000000001a",
             "status": "IN_PROGRESS",
             "startedAt": "2023-10-02T00:00:00Z",
+            "procedures": {"procedures": "pre_test"},
         },
         {
             "status": "CANCELING",
@@ -160,6 +213,9 @@ get_list_assert_target = {
             "startedAt": "2023-10-01T23:59:59Z",
             "canceledAt": "2023-10-02T12:00:00Z",
             "executeRollback": True,
+            "procedures": {"procedures": "pre_test"},
+            "applyResult": [{"test": "test"}, {"test": "test"}],
+            "rollbackProcedures": {"test": "test"},
         },
         {
             "status": "COMPLETED",
@@ -210,6 +266,9 @@ get_list_assert_target = {
             "canceledAt": "2023-10-02T12:00:00Z",
             "executeRollback": True,
             "rollbackStartedAt": "2023-10-02T12:20:00Z",
+            "procedures": {"procedures": "pre_test"},
+            "applyResult": [{"test": "test"}, {"test": "test"}],
+            "rollbackProcedures": {"test": "test"},
         },
         {
             "status": "CANCELING",
@@ -217,6 +276,8 @@ get_list_assert_target = {
             "startedAt": "2023-10-01T23:59:59Z",
             "canceledAt": "2023-10-02T12:00:00Z",
             "executeRollback": False,
+            "procedures": {"procedures": "pre_test"},
+            "applyResult": [{"test": "test"}, {"test": "test"}],
         },
         {
             "status": "SUSPENDED",
@@ -229,6 +290,20 @@ get_list_assert_target = {
         },
     ],
 }
+
+
+@pytest.fixture
+def get_list_assert_target_no_fields():
+    # 深いコピーを作成して、元のデータを変更しないようにする
+    no_fields_target = copy.deepcopy(get_list_assert_target)
+
+    # IN_PROGRESS のエントリの procedures を削除
+    for result_dict in no_fields_target["applyResults"]:
+        if result_dict.get("status") == "IN_PROGRESS" and "procedures" in result_dict:
+            del result_dict["procedures"]
+
+    return no_fields_target
+
 
 get_list_assert_target_default = {
     "count": 9,
@@ -339,136 +414,7 @@ class TestApplyCli:
         init_db_instance.commit()
         return id_list
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
-    def test_cmd_apply_success_when_migration_step_with_abs_path(
-        self, capfd, mocker, init_db_instance, get_applyID, caplog
-    ):
-        # arrange
-
-        mocker.patch("layoutapply.db.create_randomname", return_value=get_applyID)
-
-        with tempfile.TemporaryDirectory() as tempdir:
-            arg_procedure = os.path.join(tempdir, "procedure.json")
-            for pattern in procedure.single_pattern:
-                procedures = pattern[0]
-
-                with open(arg_procedure, "w", encoding="utf-8") as file:
-                    json.dump(procedures, file)
-                sys.argv = ["cli.py", "request", "-p", arg_procedure]
-
-                config = LayoutApplyConfig()
-                # act
-                procces_mock = mocker.patch(
-                    "subprocess.Popen",
-                    return_value=Process(
-                        target=run,
-                        args=(procedures, config, get_applyID, Action.REQUEST),
-                    ),
-                )
-                try:
-                    with pytest.raises(SystemExit) as excinfo:
-                        main()
-                    out, err = capfd.readouterr()
-                    id_ = json.loads(out).get("applyID")
-                    procces_mock.return_value.start()
-                    with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-                        cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{id_}'")
-                        init_db_instance.commit()
-                        row = cursor.fetchone()
-                except psycopg2.ProgrammingError:
-                    continue
-
-                # assert
-
-                assert excinfo.value.code == 0
-                assert "Request was successful. Start applying" in err
-
-                skip_next = False
-                assert json.loads(out) == {"applyID": id_}
-                # result of the operation completion list is 'IN_PROGRESS'
-                if row.get("status") == "IN_PROGRESS":
-                    assert row.get("status") == "IN_PROGRESS"
-                    for i in range(15):
-                        sleep(0.5)
-                        try:
-                            with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-                                cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{id_}'")
-                                init_db_instance.commit()
-                                row = cursor.fetchone()
-                        except psycopg2.ProgrammingError:
-                            skip_next = True
-                            break
-                        if row.get("status") == "COMPLETED":
-                            break
-                if skip_next:
-                    continue
-
-                assert row.get("status") == "COMPLETED"
-                assert row.get("rollbackprocedures") is None
-                details = row.get("applyresult")
-                assert details is not None
-                assert len(details) == len(procedures["procedures"])
-                host = config.hardware_control.get("host")
-                port = config.hardware_control.get("port")
-                uri = config.hardware_control.get("uri")
-                for proc in procedures["procedures"]:
-                    # Search for items corresponding to the migration procedure from
-                    # result details using operationID as a condition
-                    detail = [i for i in details if i["operationID"] == proc["operationID"]][0]
-                    assert proc["operationID"] == detail["operationID"]
-                    assert "COMPLETED" == detail["status"]
-                    # Check the URI, etc. of the hardware control API
-                    # Review the mockup method with hardwaremgr_fixture as well
-                    match proc["operation"]:
-                        case "connect":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert "queryParameter" not in detail
-                            assert 200 == detail["statusCode"]
-
-                        case "disconnect":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert "queryParameter" not in detail
-                            assert 200 == detail["statusCode"]
-
-                        case "boot":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert "queryParameter" not in detail
-                            assert 200 == detail["statusCode"]
-                            is_os_boot_detail = detail["isOSBoot"]
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OS_BOOT_URL}",
-                                is_os_boot_detail["uri"],
-                            )
-                            assert "GET" == is_os_boot_detail["method"]
-                            assert "queryParameter" in is_os_boot_detail
-                            assert is_os_boot_detail["queryParameter"] == {"timeOut": 2}
-                            assert is_os_boot_detail["statusCode"] == 200
-
-                        case "shutdown":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert "queryParameter" not in detail
-                            assert 200 == detail["statusCode"]
-                            assert {"action": "off"} == detail["requestBody"]
-                            get_information = detail["getInformation"]
-                            assert {"powerState": "Off"} == get_information["responseBody"]
-
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_cmd_apply_success_when_migration_step_with_rel_path(self, capfd, mocker, init_db_instance, get_applyID):
         # Ensure no active data exists before the test
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -477,7 +423,6 @@ class TestApplyCli:
             cursor.execute(query="UPDATE applystatus SET status = 'TEST_SUSPEND' WHERE status = 'SUSPENDED'")
             init_db_instance.commit()
         # arrange
-
         mocker.patch("layoutapply.db.create_randomname", return_value=get_applyID)
 
         for pattern in procedure.multi_pattern:
@@ -492,6 +437,8 @@ class TestApplyCli:
                 sys.argv = ["cli.py", "request", "-p", rel_path]
 
                 config = LayoutApplyConfig()
+                config.load_log_configs()
+                config.workflow_manager["host"] = "localhost"
                 # act
                 procces_mock = mocker.patch(
                     "subprocess.Popen",
@@ -515,7 +462,6 @@ class TestApplyCli:
                         continue
 
                     # assert
-
                     assert excinfo.value.code == 0
                     assert "Request was successful. Start applying" in err
                     skip_next = False
@@ -523,8 +469,8 @@ class TestApplyCli:
                     # result of the operation completion list is 'IN_PROGRESS'
                     if row.get("status") == "IN_PROGRESS":
                         assert row.get("status") == "IN_PROGRESS"
-                        for i in range(15):
-                            sleep(0.5)
+                        for _ in range(15):
+                            sleep(2)
                             try:
                                 cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{id_}'")
                                 init_db_instance.commit()
@@ -534,6 +480,11 @@ class TestApplyCli:
                                 break
                             if row.get("status") == "COMPLETED":
                                 break
+                        pid = row.get("processid")
+                        if pid is not None:
+                            process = psutil.Process(pid)
+                            if process.is_running():
+                                process.terminate()
                 if skip_next:
                     continue
                 assert row.get("status") == "COMPLETED"
@@ -609,6 +560,28 @@ class TestApplyCli:
                             assert detail["getInformation"]["responseBody"] == {"powerState": "Off"}
                             assert "queryParameter" not in detail
                             assert 200 == detail["statusCode"]
+                        case "start":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                                detail["uri"],
+                            )
+                            assert "POST" == detail["method"]
+                            assert "start" == detail["requestBody"].get("operation")
+                            assert "queryParameter" not in detail
+                            assert 202 == detail["statusCode"]
+                        case "stop":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                                detail["uri"],
+                            )
+                            assert "POST" == detail["method"]
+                            assert "stop" == detail["requestBody"].get("operation")
+                            assert "queryParameter" not in detail
+                            assert 202 == detail["statusCode"]
+
+        if procces_mock.return_value.is_alive():
+            procces_mock.return_value.terminate()
+            procces_mock.return_value.join()
 
     @pytest.mark.usefixtures("hardwaremgr_fixture")
     def test_cmd_apply_success_when_migration_step_empty(self, capfd, mocker, init_db_instance, get_applyID):
@@ -626,12 +599,13 @@ class TestApplyCli:
                 sys.argv = ["cli.py", "request", "-p", arg_procedure]
 
                 config = LayoutApplyConfig()
+                log_config = LayoutApplyLogConfig()
                 # act
                 procces_mock = mocker.patch(
                     "subprocess.Popen",
                     return_value=Process(
                         target=run,
-                        args=(procedures, config, get_applyID, Action.REQUEST),
+                        args=(procedures, config, log_config, get_applyID, Action.REQUEST),
                     ),
                 )
                 with pytest.raises(SystemExit) as excinfo:
@@ -656,10 +630,12 @@ class TestApplyCli:
                 details = row.get("applyresult")
                 assert details == []
                 assert len(details) == len(procedures["procedures"])
+        if procces_mock.return_value.is_alive():
+            procces_mock.return_value.terminate()
+            procces_mock.return_value.join()
 
-    def test_cmd_apply_failure_when_migration_step_missing(self, capfd, caplog):
+    def test_cmd_apply_failure_when_migration_step_missing(self, capfd):
         # arrange
-        caplog.set_level(ERROR)
         with tempfile.TemporaryDirectory() as tempdir:
             arg_procedure = os.path.join(tempdir, "procedure.json")
             # Do not create a migration plan file
@@ -682,9 +658,8 @@ class TestApplyCli:
             assert regex.search(err)
 
     @pytest.mark.parametrize("procedures", checkvalid.invalid_data_type)
-    def test_cmd_apply_failure_when_invalid_migration_step(self, capfd, caplog, procedures):
+    def test_cmd_apply_failure_when_invalid_migration_step(self, capfd, procedures):
         # arrange
-        caplog.set_level(ERROR)
         with tempfile.TemporaryDirectory() as tempdir:
             arg_procedure = os.path.join(tempdir, "procedure.json")
             with open(arg_procedure, "w", encoding="utf-8") as file:
@@ -706,9 +681,32 @@ class TestApplyCli:
             assert regex.search(err)
 
     @pytest.mark.parametrize("procedures", checkvalid.without_required_key)
-    def test_cmd_apply_failure_when_missing_required_migration_item(self, capfd, caplog, procedures):
+    def test_cmd_apply_failure_when_missing_required_migration_item(self, capfd, procedures):
         # arrange
-        caplog.set_level(ERROR)
+        with tempfile.TemporaryDirectory() as tempdir:
+            arg_procedure = os.path.join(tempdir, "procedure.json")
+            with open(arg_procedure, "w", encoding="utf-8") as file:
+                json.dump(procedures, file)
+
+            sys.argv = ["cli.py", "request", "-p", arg_procedure]
+
+            # act
+            with pytest.raises(SystemExit) as excinfo:
+                main()
+
+            # assert
+
+            assert excinfo.value.code == 1
+            out, err = capfd.readouterr()
+            # There is no standard output
+            assert out == ""
+            # There is an error message in the standard error output that starts with the specified error code
+            regex = re.compile(r"^\[E40001\]")
+            assert regex.search(err)
+
+    @pytest.mark.parametrize("procedures", checkvalid.any_key_combination)
+    def test_cmd_apply_failure_when_any_key_combination(self, capfd, procedures):
+        # arrange
         with tempfile.TemporaryDirectory() as tempdir:
             arg_procedure = os.path.join(tempdir, "procedure.json")
             with open(arg_procedure, "w", encoding="utf-8") as file:
@@ -731,9 +729,8 @@ class TestApplyCli:
             assert regex.search(err)
 
     @pytest.mark.parametrize("procedures", checkvalid.invalid_value)
-    def test_cmd_apply_failure_when_invalid_migration_value(self, capfd, caplog, procedures):
+    def test_cmd_apply_failure_when_invalid_migration_value(self, capfd, procedures):
         # arrange
-        caplog.set_level(ERROR)
         with tempfile.TemporaryDirectory() as tempdir:
             arg_procedure = os.path.join(tempdir, "procedure.json")
             with open(arg_procedure, "w", encoding="utf-8") as file:
@@ -755,7 +752,9 @@ class TestApplyCli:
             assert regex.search(err)
 
     def test_cmd_apply_failure_when_failed_to_load_config_file(self, mocker, capfd):
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
         with tempfile.TemporaryDirectory() as tempdir:
             procedure_path = os.path.join(tempdir, "procedure.json")
             with open(procedure_path, "w", encoding="utf-8") as file:
@@ -805,23 +804,36 @@ class TestApplyCli:
         [
             # log_dir is invalid
             {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "test/test",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
+                "version": 1,
+                "formatters": {
+                    "standard": {"format": "%(asctime)s %(levelname)s %(message)s", "datefmt": "%Y/%m/%d %H:%M:%S.%f"}
+                },
+                "handlers": {
+                    "file": {
+                        "class": "logging.handlers.RotatingFileHandler",
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "filename": "/test/test/app_layout_apply.log",
+                        "maxBytes": 100000000,
+                        "backupCount": 72,
+                        "encoding": "utf-8",
+                    },
+                    "console": {
+                        "class": "logging.StreamHandler",
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "stream": "ext://sys.stdout",
+                    },
+                },
+                "root": {"level": "INFO", "handlers": ["file", "console"]},
+            }
         ],
     )
-    def test_cmd_apply_failure_when_failed_to_initialize_logger(self, mocker, capfd, update_config):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
+    def test_cmd_apply_failure_when_failed_to_initialize_logger(self, mocker, capfd, update_config, docker_services):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir")
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
         config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
-        mocker.patch.object(LayoutApplyConfig, "_validate_log_dir")
+        mocker.patch("yaml.safe_load").side_effect = [BASE_CONFIG, config]
         with tempfile.TemporaryDirectory() as tempdir:
             procedure_path = os.path.join(tempdir, "procedure.json")
             with open(procedure_path, "w", encoding="utf-8") as file:
@@ -845,12 +857,6 @@ class TestApplyCli:
 
     def test_cmd_apply_failure_when_invalid_config_file(self, mocker, capfd):
         config = {
-            "log": {
-                "logging_level": "INFO",
-                "log_dir": "./",
-                "rotation_size": 1000000,
-                "backup_files": 3,
-            },
             "layout_apply": {
                 "host": "0.0.0.0",
                 "port": 8003,
@@ -858,7 +864,7 @@ class TestApplyCli:
             "db": {
                 "dbname": "ApplyStatusDB",
                 "user": "user01",
-                "password": "testpw",
+                "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5432,
             },
@@ -883,6 +889,12 @@ class TestApplyCli:
                     }
                 },
             },
+            "message_broker": {
+                "host": "localhost",
+                "port": 3500,
+                "pubsub": "layout_apply_apply",
+                "topic": "layout_apply_apply.completed",
+            },
         }
 
         mocker.patch("yaml.safe_load").return_value = config
@@ -900,7 +912,7 @@ class TestApplyCli:
                     {
                         "operationID": 1,
                         "status": "COMPLETED",
-                        "uri": "http://dagsw/api/v1/disconnect",
+                        "uri": "http://cdim/api/v1/disconnect",
                         "method": "PUT",
                         "requestBody": "",
                         "queryParameter": {
@@ -1100,9 +1112,8 @@ class TestApplyCli:
         assert excinfo.value.code == 4
         assert err == f"[E40027]Suspended data exist. Please resume layoutapply. applyID: {applyid}\n"
 
-    def test_cmd_apply_failure_when_failed_db_connection(self, capfd, caplog, mocker, init_db_instance):
+    def test_cmd_apply_failure_when_failed_db_connection(self, capfd, mocker, init_db_instance):
         # arrange
-        caplog.set_level(ERROR)
         mocker.patch.object(DbAccess, "_get_running_data", side_effect=psycopg2.OperationalError)
 
         with tempfile.TemporaryDirectory() as tempdir:
@@ -1125,7 +1136,13 @@ class TestApplyCli:
 
     def test_cmd_apply_failure_when_query_failure_occurred(self, capfd, caplog, mocker):
         # arrange
-        caplog.set_level(ERROR)
+
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
         # Create a connection object for testing.
@@ -1166,7 +1183,11 @@ class TestApplyCli:
         init_db_instance,
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
 
         # psycopg2.connect is mocked
         mocker.patch(
@@ -1186,6 +1207,7 @@ class TestApplyCli:
             with pytest.raises(SystemExit) as excinfo:
                 main()
             out, err = capfd.readouterr()
+
             # assert
             assert excinfo.value.code == 5
             # There is no standard output
@@ -1367,12 +1389,6 @@ class TestApplyCli:
     @pytest.mark.parametrize("args", [["cancel", "--apply-id", "012345678a"]])
     def test_cmd_cancel_failure_when_invalid_config_file(self, mocker, args, capfd):
         config = {
-            "log": {
-                "logging_level": "INFO",
-                "log_dir": "./",
-                "rotation_size": 1000000,
-                "backup_files": 3,
-            },
             "layout_apply": {
                 "host": "0.0.0.0",
                 "port": 8003,
@@ -1380,7 +1396,7 @@ class TestApplyCli:
             "db": {
                 "dbname": "ApplyStatusDB",
                 "user": "user01",
-                "password": "testpw",
+                "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5432,
             },
@@ -1404,6 +1420,12 @@ class TestApplyCli:
                         ],
                     }
                 },
+            },
+            "message_broker": {
+                "host": "localhost",
+                "port": 3500,
+                "pubsub": "layout_apply_apply",
+                "topic": "layout_apply_apply.completed",
             },
         }
 
@@ -1708,7 +1730,12 @@ class TestApplyCli:
         assert "--help" in out
 
     def test_cmd_get_failure_when_failed_file_output(self, mocker, init_db_instance, capfd, caplog):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         # Ensure that IN_PROGRESS data exists before the test
@@ -1728,6 +1755,7 @@ class TestApplyCli:
             assert excinfo.value.code == 13
             # assert
             _, err = capfd.readouterr()
+
             # error message is displayed in the standard error output.
             assert err == "[E40006]Failed to output file.\n"
             # error log contains the error message.
@@ -1752,8 +1780,7 @@ class TestApplyCli:
                 assert err == "[E40001]Out path points to a directory.\n"
 
     @pytest.mark.parametrize("args", [["get", "--apply-id", "123456789a"]])
-    def test_cmd_get_failure_when_failed_db_connection(self, args, mocker, capfd, caplog):
-        caplog.set_level(ERROR)
+    def test_cmd_get_failure_when_failed_db_connection(self, args, mocker, capfd):
         mocker.patch.object(DbAccess, "get_apply_status", side_effect=psycopg2.OperationalError)
         sys.argv = ["cli.py", *args]
         with pytest.raises(SystemExit) as excinfo:
@@ -1767,7 +1794,12 @@ class TestApplyCli:
 
     @pytest.mark.parametrize("args", [["get", "--apply-id", "123456789a"]])
     def test_cmd_get_failure_when_query_failure_occurred(self, args, mocker, capfd, caplog):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
         # Create a connection object for testing.
@@ -1786,6 +1818,7 @@ class TestApplyCli:
             main()
         assert excinfo.value.code == 11
         out, err = capfd.readouterr()
+
         # There is no standard output
         assert out == ""
 
@@ -1794,7 +1827,12 @@ class TestApplyCli:
 
     @pytest.mark.parametrize("args", [["get", "--apply-id", "a0b1c2d3ef"]])
     def test_cmd_get_failure_when_specified_config_id_not_found(self, args, mocker, init_db_instance, capfd, caplog):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         # arrange
 
         sys.argv = ["cli.py", *args]
@@ -1802,6 +1840,7 @@ class TestApplyCli:
             main()
         assert excinfo.value.code == 12
         out, err = capfd.readouterr()
+
         # There is no standard output
         assert out == ""
 
@@ -1817,6 +1856,7 @@ class TestApplyCli:
                     "status": "IN_PROGRESS",
                     "applyID": "000000001a",
                     "startedAt": "2023-10-02T00:00:00Z",
+                    "procedures": {"procedures": "pre_test"},
                 },
             ),
             (
@@ -1827,6 +1867,9 @@ class TestApplyCli:
                     "startedAt": "2023-10-01T23:59:59Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
                     "executeRollback": True,
+                    "rollbackProcedures": {"test": "test"},
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "procedures": {"procedures": "pre_test"},
                 },
             ),
             (
@@ -1892,6 +1935,9 @@ class TestApplyCli:
                     "canceledAt": "2023-10-02T12:00:00Z",
                     "executeRollback": True,
                     "rollbackStartedAt": "2023-10-02T12:20:00Z",
+                    "rollbackProcedures": {"test": "test"},
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "procedures": {"procedures": "pre_test"},
                 },
             ),
             (
@@ -1902,6 +1948,8 @@ class TestApplyCli:
                     "startedAt": "2023-10-01T23:59:59Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
                     "executeRollback": False,
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "procedures": {"procedures": "pre_test"},
                 },
             ),
         ],
@@ -1945,6 +1993,7 @@ class TestApplyCli:
             "status": "IN_PROGRESS",
             "applyID": "000000001a",
             "startedAt": "2023-10-02T00:00:00Z",
+            "procedures": {"procedures": "pre_test"},
         }
         assert_target["applyID"] = applyid
 
@@ -1997,9 +2046,6 @@ class TestApplyCli:
             (["gets", "--apply-id", "a21bc21587"]),  # invalid subcommand
             (["a21bc21587"]),  # no id option and subcommand
             (["get", "--apply-id"]),  # no id
-            (["get", "--apply-id", "a21bc21587", "--field"]),  # invalid fields
-            (["get", "--apply-id", "a21bc21587", "-F"]),  # invalid fields
-            (["get", "--apply-id", "a21bc21587", "--fields"]),  # invalid fields
             (["get", "--apply-id", "a21bc21587", "--outputs"]),  # invalid output
             (["get", "--apply-id", "a21bc21587", "--utput"]),  # invalid output
             (["get", "--apply-id", "a21bc21587", "-p"]),  # invalid output
@@ -2039,6 +2085,8 @@ class TestApplyCli:
     @pytest.mark.parametrize(
         "args",
         [
+            (["get", "--apply-id", "123456789a", "-f", "procedures,applyResult"]),
+            (["get", "--apply-id", "123456789a", "--fields", "procedures,applyResult"]),
             (["get", "--apply-id", "123456789a", "-s", "TEST"]),
             (["get", "--apply-id", "123456789a", "--status", "TEST"]),
             (["get", "--apply-id", "123456789a", "-ss", "2023-11-22T11:11:11Z"]),
@@ -2130,7 +2178,7 @@ class TestApplyCli:
         # An error message is displayed.
         assert out == ""
         assert (
-            "[E40001]Not allowed with argument --status, --started-at-since, --started-at-until, --ended-at-since, --ended-at-until, --sort-by, --order-by, --limit, --offset."
+            "[E40001]Not allowed with argument --fields, --status, --started-at-since, --started-at-until, --ended-at-since, --ended-at-until, --sort-by, --order-by, --limit, --offset."
         ) in err
 
     @pytest.mark.parametrize(
@@ -2166,7 +2214,7 @@ class TestApplyCli:
             in assert_out
         )
         assert (
-            "not allowed with argument --status, --started- at-since, --started-at-until, --ended-at-since, --ended-at-until, --sort-by, --order-by, --limit, --offset."
+            "not allowed with argument --fields, --status, --started-at-since, --started-at-until, --ended-at- since, --ended-at-until, --sort-by, --order-by, --limit, --offset."
             in assert_out
         )
         assert (
@@ -2246,9 +2294,12 @@ class TestApplyCli:
         assert err == ""
 
     def test_cmd_get_all_failure_when_failed_file_output(self, mocker, init_db_instance, capfd, caplog):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         # arrange
-
         # error occurs during file output.
         mocker.patch("json.dump", side_effect=Exception)
 
@@ -2338,8 +2389,7 @@ class TestApplyCli:
         assert err.startswith("[E40001]")
 
     @pytest.mark.parametrize("args", [["get"]])
-    def test_cmd_get_all_failure_when_failed_db_connection(self, args, mocker, capfd, caplog):
-        caplog.set_level(ERROR)
+    def test_cmd_get_all_failure_when_failed_db_connection(self, args, mocker, capfd):
         mocker.patch.object(DbAccess, "get_apply_status_list", side_effect=psycopg2.OperationalError)
         sys.argv = ["cli.py", *args]
         with pytest.raises(SystemExit) as excinfo:
@@ -2353,7 +2403,12 @@ class TestApplyCli:
 
     @pytest.mark.parametrize("args", [["get"]])
     def test_cmd_get_all_failure_when_query_failure_occurred(self, args, mocker, capfd, caplog):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
         # Create a connection object for testing.
@@ -2383,6 +2438,7 @@ class TestApplyCli:
         id_list = self.insert_list_data(init_db_instance)
         for i, result_dict in enumerate(get_list_assert_target_default["applyResults"]):
             result_dict["applyID"] = id_list[i]
+
         args = ["get", "--output", "applystatus_list.json"]
         sys.argv = ["cli.py", *args]
         with pytest.raises(SystemExit) as excinfo:
@@ -2556,16 +2612,14 @@ class TestApplyCli:
     @pytest.mark.parametrize(
         "args",
         [
-            (["get", "--apply-id", "123456789a", "--fields", ","]),  # empty
-            (["get", "--apply-id", "123456789a", "--fields", "procedure"]),  # invalid value
-            (["get", "--apply-id", "123456789a", "--fields", "applyresult"]),  # invalid value
-            (["get", "--apply-id", "123456789a", "--fields", "rollbackProcedure"]),  # invalid value
-            (["get", "--apply-id", "123456789a", "--fields", "rollbackresult"]),  # invalid value
+            (["get", "--fields", ","]),  # empty
+            (["get", "--fields", "procedure"]),  # invalid value
+            (["get", "--fields", "applyresult"]),  # invalid value
+            (["get", "--fields", "rollbackProcedure"]),  # invalid value
+            (["get", "--fields", "rollbackresult"]),  # invalid value
             (
                 [
                     "get",
-                    "--apply-id",
-                    "123456789a",
                     "--fields",
                     "procedures/applyResult",
                 ]
@@ -2573,8 +2627,6 @@ class TestApplyCli:
             (
                 [
                     "get",
-                    "--apply-id",
-                    "123456789a",
                     "--fields",
                     "procedure,sapplyResult",
                 ]
@@ -2592,135 +2644,17 @@ class TestApplyCli:
         assert err.startswith("[E40001]")
 
     @pytest.mark.parametrize(
-        "insert_sql, fields_str, in_data, not_in_data",
-        [
-            (
-                sql.get_fields_insert_sql_1,
-                "procedures",
-                ["procedures"],
-                [
-                    "applyResult",
-                    "rollbackProcedures",
-                    "rollbackResult",
-                    "resumeProcedures",
-                    "resuneResult",
-                ],
-            ),  # fields
-            (
-                sql.get_fields_insert_sql_1,
-                "procedures,applyResult",
-                ["procedures", "applyResult"],
-                [
-                    "rollbackProcedures",
-                    "rollbackResult",
-                    "resumeProcedures",
-                    "resuneResult",
-                ],
-            ),  # fields(multi)
-            (
-                sql.get_fields_insert_sql_1,
-                "procedures,applyResult,rollbackProcedures,rollbackResult,resumeProcedures,resumeResult",
-                ["procedures", "applyResult"],
-                [
-                    "rollbackProcedures",
-                    "rollbackResult",
-                    "resumeProcedures",
-                    "resuneResult",
-                ],
-            ),  # fields all・status:COMPLETED(there is no output item)
-            (
-                sql.get_fields_insert_sql_2,
-                "procedures,applyResult,rollbackProcedures,rollbackResult,resumeProcedures,resumeResult",
-                [],
-                [
-                    "procedures",
-                    "applyResult",
-                    "rollbackProcedures",
-                    "rollbackResult",
-                    "resumeProcedures",
-                    "resuneResult",
-                ],
-            ),  # fields all・status:IN_PROGRESS(there is no output item)
-            (
-                sql.get_fields_insert_sql_3,
-                "procedures,applyResult,rollbackProcedures,rollbackResult,resumeProcedures,resumeResult",
-                [],
-                [
-                    "procedures",
-                    "applyResult",
-                    "rollbackProcedures",
-                    "rollbackResult",
-                    "resumeProcedures",
-                    "resuneResult",
-                ],
-            ),  # fields all・status:CANCELING(there is no output item)
-            (
-                sql.get_fields_insert_sql_4,
-                "applyResult,rollbackResult",
-                ["applyResult"],
-                [
-                    "procedures",
-                    "rollbackProcedures",
-                    "rollbackResult",
-                    "resumeProcedures",
-                    "resuneResult",
-                ],
-            ),  # fields(multi)・status:FAILED(there is no output item)
-            (
-                sql.get_fields_insert_sql_5,
-                "procedures,applyResult,rollbackProcedures,rollbackResult,resumeProcedures,resumeResult",
-                ["procedures", "applyResult", "rollbackProcedures"],
-                ["rollbackResult", "resumeProcedures", "resuneResult"],
-            ),  # fields all・no rollback and status:no rollback and ollbackResult has not been output due to the CANCELED status.
-            (
-                sql.get_fields_insert_sql_6,
-                "procedures,applyResult,rollbackProcedures,rollbackResult,resumeProcedures,resumeResult",
-                ["procedures", "applyResult", "rollbackProcedures", "rollbackResult"],
-                ["resumeProcedures", "resuneResult"],
-            ),  # fields all・the status is CANCELED with a rollback, all items are outputted.
-        ],
-    )
-    def test_cmd_get_success_when_fields_specified(
-        self,
-        mocker,
-        init_db_instance,
-        insert_sql,
-        fields_str,
-        in_data,
-        not_in_data,
-        capfd,
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=insert_sql, vars=[applyid])
-            init_db_instance.commit()
-
-        args = ["get", "--apply-id", applyid, "--fields", fields_str]
-        sys.argv = ["cli.py", *args]
-        with pytest.raises(SystemExit) as excinfo:
-            main()
-        assert excinfo.value.code == ExitCode.NORMAL
-        out, err = capfd.readouterr()
-        # standard output displays only the items specified by fields, and items not specified are not displayed.
-        if in_data:
-            for data in in_data:
-                assert data in json.loads(out)
-        if not_in_data:
-            for not_data in not_in_data:
-                assert not_data not in json.loads(out)
-        # There is no standard error output.
-        assert err == ""
-
-    @pytest.mark.parametrize(
         ("assert_target", "insert_sql"),
         [
             (
                 {
                     "status": "IN_PROGRESS",
                     "applyID": "300000004d",
+                    "procedures": {"procedures": "pre_test"},
                     "startedAt": "2023-10-02T00:00:00Z",
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
                     "resumedAt": "2023-10-03T12:23:59Z",
+                    "resumeProcedures": {"test": "pre_test"},
                 },
                 sql.insert_resumed_get_target_sql_1,
             ),
@@ -2728,13 +2662,31 @@ class TestApplyCli:
                 {
                     "status": "CANCELING",
                     "applyID": "300000005e",
+                    "procedures": {"procedures": "pre_test"},
                     "startedAt": "2023-10-02T00:00:00Z",
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
                     "canceledAt": "2023-10-02T00:00:01Z",
                     "executeRollback": True,
+                    "rollbackResult": [{"test": "test"}, {"test": "test"}],
                     "rollbackStartedAt": "2023-10-02T00:00:02Z",
+                    "resumeResult": [{"test": "test"}],
                     "resumedAt": "2023-10-03T12:23:59Z",
+                    "resumeProcedures": {"test": "pre_test"},
                 },
                 sql.insert_resumed_get_target_sql_2,
+            ),
+            (
+                {
+                    "status": "IN_PROGRESS",
+                    "applyID": "300000004d",
+                    "procedures": {"procedures": "pre_test"},
+                    "startedAt": "2023-10-02T00:00:00Z",
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "resumeResult": [{"test": "test"}],
+                    "resumedAt": "2023-10-03T12:23:59Z",
+                    "resumeProcedures": {"test": "pre_test"},
+                },
+                sql.insert_resumed_get_target_sql_5,
             ),
         ],
     )
@@ -3053,10 +3005,13 @@ class TestApplyCli:
                     assert "rollbackProcedures" not in result
                     assert "rollbackResult" not in result
                     _fields_check(["procedures", "applyResult"], fields, result)
-                case "IN_PROGRESS" | "CANCELING":
+                case "IN_PROGRESS":
                     # no items that can be specified in fields
-                    assert "procedures" not in result
                     assert "applyResult" not in result
+                    assert "rollbackProcedures" not in result
+                    assert "rollbackResult" not in result
+                case "CANCELING":
+                    # no items that can be specified in fields
                     assert "rollbackProcedures" not in result
                     assert "rollbackResult" not in result
                 case "CANCELED":
@@ -3552,11 +3507,16 @@ class TestApplyCli:
         ],
     )
     def test_cmd_get_all_success_when_no_specified_sortby_and_orderby_and_count_offset(
-        self, init_db_instance, args, capfd, caplog
+        self, init_db_instance, args, capfd, get_list_assert_target_no_fields, mocker, caplog, docker_services
     ):
-        caplog.set_level(DEBUG)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger()
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         id_list = self.insert_list_data(init_db_instance)
-        for i, result_dict in enumerate(get_list_assert_target["applyResults"]):
+        for i, result_dict in enumerate(get_list_assert_target_no_fields["applyResults"]):
             result_dict["applyID"] = id_list[i]
 
         sys.argv = ["cli.py", *args]
@@ -3568,14 +3528,13 @@ class TestApplyCli:
         a = json.loads(out)
         assert a["totalCount"] == 1
         for apply in a["applyResults"]:
-            assert apply in get_list_assert_target["applyResults"]
+            assert apply in get_list_assert_target_no_fields["applyResults"]
         # There is no standard error output.
         assert err == ""
-        log_msg = json.loads(caplog.messages[7]).get("message")
 
-        assert "ORDER BY startedAt desc " in log_msg
-        assert "LIMIT 20 " in log_msg
-        assert "OFFSET 0" in log_msg
+        assert "ORDER BY startedAt desc " in caplog.text
+        assert "LIMIT 20 " in caplog.text
+        assert "OFFSET 0" in caplog.text
 
     @pytest.mark.parametrize(
         "args",
@@ -3765,7 +3724,7 @@ class TestApplyCli:
             "db": {
                 "dbname": "ApplyStatusDB",
                 "user": "user01",
-                "password": "testpw",
+                "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5432,
             },
@@ -3789,6 +3748,12 @@ class TestApplyCli:
                         ],
                     }
                 },
+            },
+            "message_broker": {
+                "host": "localhost",
+                "port": 3500,
+                "pubsub": "layout_apply_apply",
+                "topic": "layout_apply_apply.completed",
             },
         }
 
@@ -3851,7 +3816,7 @@ class TestApplyCli:
         assert assert_print in err
 
     @pytest.mark.parametrize("args", [["delete", "--apply-id", "abcdeabcde"]])
-    def test_cmd_delete_failure_when_nonexistent_id(self, mocker, init_db_instance, args, capfd):
+    def test_cmd_delete_failure_when_nonexistent_id(self, mocker, init_db_instance, args, capfd, docker_services):
         assert_print = "[E40020]Specified abcdeabcde is not found.\n"
 
         sys.argv = ["cli.py", *args]
@@ -3892,6 +3857,7 @@ class TestApplyCli:
         sys.argv = ["cli.py", *args]
 
         config = LayoutApplyConfig()
+        config.load_log_configs()
         # act
         procces_mock = mocker.patch(
             "subprocess.Popen",
@@ -3965,6 +3931,7 @@ class TestApplyCli:
 
         assert row.get("status") == "COMPLETED"
         assert row.get("rollbackprocedures") is None
+        assert row.get("applyresult") != row.get("resumeresult")
         details = row.get("resumeresult")
         procedures = row.get("resumeprocedures")
         assert details is not None
@@ -3992,6 +3959,9 @@ class TestApplyCli:
                     get_information = detail["getInformation"]
                     assert {"powerState": "Off"} == get_information["responseBody"]
 
+        if procces_mock.return_value.is_alive():
+            procces_mock.return_value.terminate()
+            procces_mock.return_value.join()
         sleep(1)
         httpserver.clear()
         httpserver.clear_all_handlers()
@@ -4043,6 +4013,7 @@ class TestApplyCli:
         sys.argv = ["cli.py", *args]
 
         config = LayoutApplyConfig()
+        config.load_log_configs()
         # act
         procces_mock = mocker.patch(
             "subprocess.Popen",
@@ -4070,6 +4041,7 @@ class TestApplyCli:
             main()
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
+            init_db_instance.commit()
             row = cursor.fetchone()
         init_db_instance.commit()
         # assert
@@ -4091,6 +4063,7 @@ class TestApplyCli:
                     break
 
         assert row.get("rollbackstatus") == "COMPLETED"
+        assert row.get("applyresult") != row.get("resumeresult")
         details = row.get("resumeresult")
         procedures = row.get("resumeprocedures")
         assert details is not None
@@ -4118,6 +4091,9 @@ class TestApplyCli:
                     get_information = detail["getInformation"]
                     assert {"powerState": "Off"} == get_information["responseBody"]
 
+        if procces_mock.return_value.is_alive():
+            procces_mock.return_value.terminate()
+            procces_mock.return_value.join()
         sleep(1)
         httpserver.clear()
         httpserver.clear_all_handlers()
@@ -4183,12 +4159,6 @@ class TestApplyCli:
     @pytest.mark.parametrize("args", [["resume", "--apply-id", "012345678a"]])
     def test_cmd_resume_failure_when_invalid_config_file(self, mocker, args, capfd):
         config = {
-            "log": {
-                "logging_level": "INFO",
-                "log_dir": "./",
-                "rotation_size": 1000000,
-                "backup_files": 3,
-            },
             "layout_apply": {
                 "host": "0.0.0.0",
                 "port": 8003,
@@ -4196,7 +4166,7 @@ class TestApplyCli:
             "db": {
                 "dbname": "ApplyStatusDB",
                 "user": "user01",
-                "password": "testpw",
+                "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5432,
             },
@@ -4299,14 +4269,7 @@ class TestApplyCli:
         assert err == assert_print
 
     @pytest.mark.parametrize("args", [["resume", "--apply-id", "300000007b"]])
-    def test_cmd_resume_failure_when_failed_to_start_subprocess(
-        self,
-        capfd,
-        caplog,
-        mocker,
-        init_db_instance,
-        args,
-    ):
+    def test_cmd_resume_failure_when_failed_to_start_subprocess(self, capfd, mocker, init_db_instance, args, caplog):
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(
@@ -4319,7 +4282,11 @@ class TestApplyCli:
             )
             init_db_instance.commit()
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
 
         # arrange
 
@@ -4480,8 +4447,8 @@ class TestApplyCli:
 
         # psycopg2.connect is mocked
         mocker.patch("psycopg2.connect", return_value=mock_connection)
-        config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        config = LayoutApplyLogConfig().log_config
+        logger = Logger(config)
         db = DbAccess(logger)
         # act
         sys.argv = ["cli.py", "resume", "--apply-id", "dummy"]
@@ -4496,7 +4463,7 @@ class TestApplyCli:
         # Ensure that the E40018 error is output to the standard error.
         assert "[E40018]Could not connect to ApplyStatusDB." in err
 
-    def test_cmd_resume_failure_when_query_failure_during_subprocess_registration(self, mocker, capfd):
+    def test_cmd_resume_failure_when_query_failure_during_subprocess_registration(self, mocker, capfd, docker_services):
 
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
@@ -4506,13 +4473,13 @@ class TestApplyCli:
 
         # psycopg2.connect is mocked
         mocker.patch("psycopg2.connect", return_value=mock_connection)
-        config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        config = LayoutApplyLogConfig()
+        logger = Logger(config.log_config)
         db = DbAccess(logger)
         # act
-        sys.argv = ["cli.py", "resume", "--apply-id", "dummy"]
+        sys.argv = ["cli.py", "resume", "--apply-id", "123456789a"]
         with pytest.raises(SystemExit) as excinfo:
-            LayoutApplyCommandLine()._update_subporcess_info(db, os.getpid(), "dummy")
+            LayoutApplyCommandLine()._update_subporcess_info(db, os.getpid(), "123456789a")
 
         # assert
         assert excinfo.value.code == ExitCode.QUERY_ERR

@@ -27,13 +27,13 @@ import iso8601
 import psycopg2
 from jsonschema import ValidationError, validate
 
-from layoutapply.cdimlogger import Logger
 from layoutapply.common.cli import AbstractBaseCommandLine
+from layoutapply.common.logger import Logger
 
 sys.path.append(os.path.abspath("."))
 
 # pylint: disable=wrong-import-position
-from layoutapply.const import Action, ExitCode, RequestType, Result  # noqa: E402
+from layoutapply.const import Action, ExitCode, Result  # noqa: E402
 from layoutapply.custom_exceptions import (  # noqa: E402
     AlreadyExecuteException,
     BeingRunningException,
@@ -125,7 +125,7 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
             metavar="APPLY_ID",
             help=(
                 "get ID as a string. If not specified, get all apply status."
-                + " not allowed with argument --status, --started-at-since, --started-at-until,"
+                + " not allowed with argument --fields, --status, --started-at-since, --started-at-until,"
                 + " --ended-at-since, --ended-at-until, --sort-by, --order-by, --limit, --offset."
             ),
         )
@@ -288,7 +288,7 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
         try:
             # Control dual startup
             database = DbAccess(logger)
-            applyID = database.register(is_empty=proc_len == 0)  # pylint: disable=C0103
+            applyID = database.register(procedure, is_empty=proc_len == 0)  # pylint: disable=C0103
             logger.debug(f"applyID: {applyID}")
         except MultipleInstanceError as err:
             print(
@@ -386,7 +386,31 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
             msg = f"Success.\nstatus={status}"
             print(msg)
             logger.info(msg)
-        elif pre_r_status in (Result.COMPLETED, Result.FAILED, Result.SUSPENDED):
+        else:
+            exit_code = self._make_cancel_response_other_case(logger, pre_status, status, pre_r_status, r_status)
+
+        return exit_code
+
+    def _make_cancel_response_other_case(
+        self,
+        logger: Logger,
+        pre_status: dict,
+        status: dict,
+        pre_r_status: str,
+        r_status: str,
+    ) -> int:
+        """Make layout cancel response for other case.
+
+        Args:
+            logger (Logger): Logger
+            pre_status (dict): pre status
+            status (dict): status
+            pre_r_status (dict): pre rollback status
+            r_status (dict): rollback status
+        Return:
+            exit_code (int): cancel response code
+        """
+        if pre_r_status in (Result.COMPLETED, Result.FAILED, Result.SUSPENDED):
             # If the rollback state before the transition is either COMPLETED or FAILED,
             # terminate normally without any transition.
             # Alternatively, when the rollback state before the transition is SUSPENDED,
@@ -437,18 +461,16 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
         """Main processing function for layout get"""
         args = self.get_args()
 
-        fields_list = self._set_fields_list(args.fields)
-
         self._validate_allowed_args(args)
 
-        self._validate_option_for_get_cli(args, fields_list)
+        self._validate_option_for_get_cli(args)
 
         _, logger = self._initialize()
 
         try:
             database = DbAccess(logger)
             logger.info(f"Start get cli. args:{vars(args)}")
-            applystatus = database.get_apply_status(args.apply_id, fields_list)
+            applystatus = database.get_apply_status(args.apply_id)
         except psycopg2.OperationalError as err:
             exc = OperationalError(err)
             print(f"[E40018]{exc.message}", file=sys.stderr)
@@ -498,7 +520,8 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
                 offset=self.args.offset,
             )
             logger.info(f"Start getall cli. args:{vars(self.args)}")
-            applyresults = database.get_apply_status_list(apply_option, RequestType.CLI)
+            applyresults = database.get_apply_status_list(apply_option)
+
         except psycopg2.OperationalError as err:
             exc = OperationalError(err)
             print(f"[E40018]{exc.message}", file=sys.stderr)
@@ -710,7 +733,7 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
 
         return fields_list
 
-    def _validate_option_for_get_cli(self, args: dict, fields: list, date_dict: dict = None) -> None:
+    def _validate_option_for_get_cli(self, args: dict, fields: list = None, date_dict: dict = None) -> None:
         """Validate option of get cli
 
         Args:
@@ -749,12 +772,13 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
 
     def _load_logger(self, config: LayoutApplyConfig) -> Logger:
         """Initialize the log object.
-
+        Args:
+            config (LayoutApplyConfig): LayoutApplyConfig object
         Returns:
             Logger: logger object
         """
         try:
-            logger = Logger(**config.logger_args)
+            logger = Logger(config.log_config)
         except Exception as error:  # pylint: disable=W0703
             raise LoggerLoadException() from error
         return logger
@@ -767,12 +791,14 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
         """
         try:
             config = LayoutApplyConfig()
+            config.load_log_configs()
         except SettingFileLoadException as error:
             print(f"[E40002]{error.message}", file=sys.stderr)
             sys.exit(error.exit_code)
         except SecretInfoGetException as error:
             print(f"[E40030]{error.message}", file=sys.stderr)
             sys.exit(error.exit_code)
+
         try:
             logger = self._load_logger(config)
         except LoggerLoadException as error:
@@ -851,8 +877,8 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
         for option_key in args.__dict__.keys():
             # Since the args also contain command (subcommand) and apply-id,
             # judging with not None will get caught by command and apply-id.
-            # Therefore, skip command, apply-id, and fields.
-            if option_key in ("command", "apply_id", "fields", "output"):
+            # Therefore, skip command, apply-id, and output.
+            if option_key in ("command", "apply_id", "output"):
                 continue
             if args.__dict__[option_key] is not None:
                 print(f"[E40001]{NotAllowedWithError().message}", file=sys.stderr)

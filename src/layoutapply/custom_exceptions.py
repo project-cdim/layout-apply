@@ -18,6 +18,7 @@ from http import HTTPStatus
 import psycopg2
 from fastapi.exceptions import RequestValidationError
 from jsonschema import ValidationError
+from requests import Response
 
 from layoutapply.const import ExitCode
 
@@ -42,7 +43,7 @@ class NotAllowedWithError:
         """constructor"""
         self.message = (
             "Not allowed with argument"
-            " --status, --started-at-since, --started-at-until, --ended-at-since, --ended-at-until,"
+            " --fields, --status, --started-at-since, --started-at-until, --ended-at-since, --ended-at-until,"
             " --sort-by, --order-by, --limit, --offset."
         )
 
@@ -106,9 +107,9 @@ class SettingFileLoadException(CustomBaseException):
     """Occurs when a validation check fails during the loading of a configuration file
     errorcode: E40002 or E50002 error"""
 
-    def __init__(self, message):
+    def __init__(self, message, filename):
         super().__init__(message)
-        self.message = f"Failed to load layoutapply_config.yaml.\n{message}"
+        self.message = f"Failed to load {filename}.\n{message}"
 
     @property
     def exit_code(self) -> int:
@@ -468,3 +469,54 @@ class LoggerLoadException(CustomBaseException):
     def status_code(self) -> int:
         """Retrieve for API StatusCode"""
         return HTTPStatus.INTERNAL_SERVER_ERROR.value
+
+
+class OSBootMaxRetriesExceededException(CustomBaseException):
+    """errorcode: E40032 error"""
+
+    def __init__(self, target_device_id):
+        super().__init__(target_device_id)
+        self.message = f"The operating system failed to boot after turning the power on. deviceID: {target_device_id}"
+
+
+class ExtendedProcedurePollingExceededException(CustomBaseException):
+    """errorcode: E40033 error"""
+
+    def __init__(self, target_request_instance_id, current_status):
+        super().__init__(target_request_instance_id)
+        self.message = (
+            "The extended process could not be completed. "
+            f"requestInstanceID: {target_request_instance_id}, current: {current_status}"
+        )
+
+
+class FailedGetServiceInfoException(CustomBaseException):
+    """errorcode: E40034 error"""
+
+    def __init__(self):
+        super().__init__()
+        self.message = "Failed to get extended process information."
+
+
+class MessagePublishException(CustomBaseException):
+    """Message publish error class"""
+
+    def __init__(self, exc: Exception = None, response: Response = None):
+        """constructor
+
+        Args:
+            exc (Exception, optional): Exception that occurred. Defaults to None.
+            response (Response, optional): Response object from the request. Defaults to None.
+        """
+        if response is not None:
+            status_code = response.status_code
+            text = response.content
+        elif exc is not None:
+            status_code = None
+            if hasattr(exc, "response") and exc.response is not None:
+                status_code = exc.response.status_code
+            text = str(exc)
+        else:  # pragma: no cover
+            status_code = HTTPStatus.INTERNAL_SERVER_ERROR.value
+            text = "Unknown error occurred"
+        self.message = f"Failed to publish message: status:[{status_code}], response[{text}]"

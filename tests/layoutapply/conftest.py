@@ -12,8 +12,10 @@
 # License for the specific language governing permissions and limitations
 #  under the License.
 import json
+import logging.config
 import os
 import re
+import uuid
 
 import psycopg2
 import pytest
@@ -21,8 +23,9 @@ from psycopg2.extras import DictCursor
 from pytest_httpserver import HTTPServer
 from werkzeug import Response
 
-from layoutapply.cdimlogger import Logger
+from layoutapply.common.logger import Logger
 from layoutapply.db import DbAccess
+from layoutapply.setting import LayoutApplyLogConfig
 from tests.layoutapply.test_data.migration import (
     CONF_NODES_API_RESP_DATA,
     CONF_NODES_API_RESP_DATA_MULTIDEVICE,
@@ -44,10 +47,17 @@ OS_BOOT_URL = "cpu\/(.*)\/is\-os\-ready"
 # Set according to the values in the layoutapply_config.yaml configuration
 HARDWARE_CONTROL_HOST = "localhost"
 HARDWARE_CONTROL_PORT = 48889
-HARDWARE_CONTROL_URI = "dagsw/api/v1"
-GET_INFORMATION_URI = "dagsw/api/v1"
-CONFIG_MANAGER_URI = "dagsw/api/v1"
-MIGRATION_PROCEDURE_URI = "dagsw/api/v1"
+WORKFLOW_MANAGER_HOST = "localhost"
+WORKFLOW_MANAGER_PORT = 8008
+HARDWARE_CONTROL_URI = "cdim/api/v1"
+GET_INFORMATION_URI = "cdim/api/v1"
+CONFIG_MANAGER_URI = "cdim/api/v1"
+MIGRATION_PROCEDURE_URI = "cdim/api/v1"
+WORKFLOW_MANAGER_URI = "cdim/api/v1"
+GET_WORKFLOW_MANAGER_URI = "cdim/api/v1"
+
+EXTENDED_PROCEDURE_URI = "extended-procedure"
+EXTENDED_PROCEDURE_ID = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 
 
 @pytest.fixture(scope="session")
@@ -89,8 +99,8 @@ def hardwaremgr_fixture(httpserver: HTTPServer):
     uri = HARDWARE_CONTROL_URI
     get_information_uri = GET_INFORMATION_URI
 
-    httpserver.clear()
-    httpserver.clear_all_handlers()
+    # httpserver.clear()
+    # httpserver.clear_all_handlers()
 
     # with httpserver.wait(stop_on_nohandler=False, timeout=0.1) as waiter:
     httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
@@ -118,6 +128,42 @@ def hardwaremgr_fixture(httpserver: HTTPServer):
     yield
 
     httpserver.clear()
+
+
+@pytest.fixture(scope="function")
+def extended_procedure_fixture():
+    """Mock up the workflow manager API
+    Everything completes successfully.
+
+    Args:
+        httpserver (HTTPServer): Dummy server object
+    """
+    workflow_manager_uri = GET_WORKFLOW_MANAGER_URI
+    workflow_manager_server = HTTPServer(host=WORKFLOW_MANAGER_HOST, port=WORKFLOW_MANAGER_PORT)
+    workflow_manager_server.start()
+
+    workflow_manager_server.expect_request(
+        re.compile(f"\/{workflow_manager_uri}\/{EXTENDED_PROCEDURE_URI}"), method="POST"
+    ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
+    workflow_manager_server.expect_request(
+        re.compile(f"\/{workflow_manager_uri}\/{EXTENDED_PROCEDURE_URI}\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+    ).respond_with_json(
+        {
+            "applyID": str(uuid.uuid4()),
+            "targetCPUID": str(uuid.uuid4()),
+            "targetRequestInstanceID": str(uuid.uuid4()),
+            "operation": "stop",
+            "id": EXTENDED_PROCEDURE_ID,
+            "status": "COMPLETED",
+            "serviceInstanceID": str(uuid.uuid4()),
+        },
+        status=200,
+    )
+
+    yield
+
+    workflow_manager_server.stop()
+    workflow_manager_server.clear()
 
 
 @pytest.fixture(scope="function")
@@ -334,6 +380,33 @@ def hardwaremgr_error_fixture(httpserver: HTTPServer):
 
 
 @pytest.fixture(scope="function")
+def extended_procedure_error_fixture():
+    """Mock up the workflow manager API
+    Everything ends failed.
+
+    Args:
+        httpserver (HTTPServer): Dummy server object
+    """
+    err_msg = {"code": "xxxx", "message": "Internal Server Error."}
+    err_code = 500
+    workflow_manager_uri = GET_WORKFLOW_MANAGER_URI
+    workflow_manager_server = HTTPServer(host=WORKFLOW_MANAGER_HOST, port=WORKFLOW_MANAGER_PORT)
+    workflow_manager_server.start()
+
+    workflow_manager_server.expect_request(re.compile(f"\/{workflow_manager_uri}"), method="POST").respond_with_json(
+        err_msg, err_code
+    )
+    workflow_manager_server.expect_request(
+        re.compile(f"\/{workflow_manager_uri}\/{EXTENDED_PROCEDURE_URI}\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+    ).respond_with_json({}, status=503)
+
+    yield
+
+    workflow_manager_server.stop()
+    workflow_manager_server.clear()
+
+
+@pytest.fixture(scope="function")
 def migration_server_err_fixture(httpserver: HTTPServer):
     """Mock up the abnormal migration procedure generation API
 
@@ -459,7 +532,7 @@ def is_postgresql_ready():
         db_config = {
             "dbname": "ApplyStatusDB",
             "user": "user01",
-            "password": "testpw",
+            "password": "P@ssw0rd",
             "host": "localhost",
             "port": 5435,
         }
@@ -472,7 +545,8 @@ def is_postgresql_ready():
 
 @pytest.fixture
 def get_db_instance():
-    logger = Logger(log_dir="./")
+
+    logger = logging.getLogger("logger.py")
     return DbAccess(logger)
 
 
@@ -491,3 +565,10 @@ def init_db_instance(docker_services, mocker):
     DB_CONNECT.commit()
     DB_CONNECT.close()
     DB_CONNECT = None
+
+
+@pytest.fixture(autouse=True)
+def log_setting():
+    log_config = LayoutApplyLogConfig().log_config
+    log_config["disable_existing_loggers"] = False
+    logging.config.dictConfig(log_config)

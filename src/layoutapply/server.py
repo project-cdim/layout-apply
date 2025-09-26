@@ -13,7 +13,6 @@
 #  under the License.
 """LayoutApply API request-response function"""
 
-import copy
 import json
 import sys
 from http import HTTPStatus
@@ -31,7 +30,7 @@ from jsonschema import ValidationError, validate
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
-from layoutapply.cdimlogger import Logger
+from layoutapply.common.logger import Logger
 from layoutapply.const import Action, Result
 from layoutapply.custom_exceptions import (
     AlreadyExecuteException,
@@ -70,6 +69,10 @@ from layoutapply.util import create_applystatus_response, set_date_dict
 app = FastAPI()
 BASEURL = "/cdim/api/v1/"
 DATABASE = None
+JSON_RESPONSE_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Type": "application/json; charset=utf-8",
+}
 
 # Add to bypass CORS
 app.add_middleware(
@@ -156,8 +159,9 @@ def _initialize() -> Tuple[LayoutApplyConfig, Logger]:
         Tuple[LayoutApplyConfig, Logger]: Config object and logger object
     """
     config = LayoutApplyConfig()
+    config.load_log_configs()
     try:
-        logger = Logger(**config.logger_args)
+        logger = Logger(config.log_config)
     except Exception as error:
         raise LoggerLoadException() from error
     return config, logger
@@ -193,7 +197,7 @@ def execute_layoutapply(procedure: ProcedureList):
 
     # Control dual boot
     database = _get_db_connection(logger)
-    applyID = database.register(is_empty=proc_len == 0)  # pylint: disable=C0103
+    applyID = database.register(proc, is_empty=proc_len == 0)  # pylint: disable=C0103
     logger.debug(f"applyID: {applyID}")
 
     # Do not run the subprocess if the migration procedure list is empty.
@@ -202,10 +206,12 @@ def execute_layoutapply(procedure: ProcedureList):
         response_code, return_data, proc_id = _exec_subprocess(logger, proc, config, applyID, Action.REQUEST)
         database.update_subprocess(proc_id, applyID)
         if response_code is not None:
-            return JSONResponse(status_code=response_code, content=return_data)
+            return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
     result_json = {"applyID": applyID}
-    return_value = JSONResponse(status_code=HTTPStatus.ACCEPTED.value, content=result_json)
+    return_value = JSONResponse(
+        status_code=HTTPStatus.ACCEPTED.value, content=result_json, headers=JSON_RESPONSE_HEADERS
+    )
     logger.info(f"End request api. status_code:{HTTPStatus.ACCEPTED.value}")
     return return_value
 
@@ -256,7 +262,11 @@ def _cancel_layoutapply(applyID: str, rollback_flg: bool, logger: Logger):  # py
     # Adjusting response content in accordance with the results of the cancellation process
     if pre_status == Result.IN_PROGRESS and status == Result.FAILED:
         exc = SubprocessNotFoundException("status")
-        return_data = {"code": "E40028", "message": exc.message, "status": status}
+        return_data = {
+            "code": "E40028",
+            "message": exc.message,
+            "status": status,
+        }
         logger.error(f"[E40028]{exc.message}")
         response_code = exc.status_code
     elif pre_r_status == Result.IN_PROGRESS and r_status == Result.FAILED:
@@ -269,7 +279,43 @@ def _cancel_layoutapply(applyID: str, rollback_flg: bool, logger: Logger):  # py
             "rollbackStatus": r_status,
         }
         response_code = exc.status_code
-    elif pre_status in [Result.IN_PROGRESS, Result.SUSPENDED]:
+    else:
+        response_code, return_data, is_already_execute = _create_cancel_layoutapply_response(
+            pre_status, status, pre_r_status, r_status
+        )
+        if is_already_execute is True:
+            # Abnormal termination because the previous status was COMPLETED or FAILED,
+            # making it impossible to transition to the executed status.
+            # Or, if the status is CANCELED and the rollback status is IN_PROGRESS with no abnormality in the process,
+            # process will be abnormally terminated as it is already requested to be canceled and cannot be transitioned
+            msg = AlreadyExecuteException().message
+            return_data = {
+                "code": "E40022",
+                "message": msg,
+            }
+            logger.error(f"[E40022]{msg}")
+            response_code = AlreadyExecuteException().status_code
+
+    logger.info(f"End cancel api. status_code:{response_code}")
+    return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
+
+
+def _create_cancel_layoutapply_response(pre_status: str, status: str, pre_r_status: str, r_status: str):
+    """create response for cancel layoutapply
+
+    Args:
+        pre_status (str): pre status
+        status (str): status
+        pre_r_status (str): pre rollback status
+        r_status (str): rollback status
+
+    Returns:
+        response_code (int): response status_code
+        return_data (dict): response content
+        is_already_execute (bool): already execute flag
+    """
+    response_code, return_data, is_already_execute = None, None, False
+    if pre_status in (Result.IN_PROGRESS, Result.SUSPENDED):
         response_code, return_data = HTTPStatus.ACCEPTED.value, {"status": status}
     elif pre_r_status == Result.SUSPENDED:
         response_code, return_data = HTTPStatus.ACCEPTED.value, {
@@ -284,41 +330,34 @@ def _cancel_layoutapply(applyID: str, rollback_flg: bool, logger: Logger):  # py
             "rollbackStatus": r_status,
         }
     else:
-        # Abnormal termination because the previous status was COMPLETED or FAILED,
-        # making it impossible to transition to the executed status.
-        # Or, if the status is CANCELED and the rollback status is IN_PROGRESS with no abnormality in the process,
-        # process will be abnormally terminated as it is already requested to be canceled and cannot be transitioned
-        msg = AlreadyExecuteException().message
-        return_data = {"code": "E40022", "message": msg}
-        logger.error(f"[E40022]{msg}")
-        response_code = AlreadyExecuteException().status_code
+        is_already_execute = True
 
-    logger.info(f"End cancel api. status_code:{response_code}")
-    return JSONResponse(status_code=response_code, content=return_data)
+    return response_code, return_data, is_already_execute
 
 
 @app.get(BASEURL + "layout-apply/{applyID}", response_class=JSONResponse)
-def get_applystatus(applyID, fields: List[str] = Query(None)):  # pylint: disable=C0103
+def get_applystatus(applyID):  # pylint: disable=C0103
     """layoutapply get(API)
     Args:
         applyID: layoutapply id
-        fields: specify the items for return information
 
     Returns:
         JsonResponse: include status_code, applystatus
     """
 
-    return_data = _validate_option_for_get_api(fields, applyID)
+    return_data = _validate_option_for_get_api(applyID)
     if return_data:
-        return JSONResponse(status_code=HTTPStatus.BAD_REQUEST.value, content=return_data)
+        return JSONResponse(
+            status_code=HTTPStatus.BAD_REQUEST.value, content=return_data, headers=JSON_RESPONSE_HEADERS
+        )
 
     config, logger = _initialize()
 
     logger.debug(f"config: {vars(config)}")
 
-    logger.info(f"Start get api. args.applyID:{applyID}. args.fields:{json.dumps(fields)}.")
+    logger.info(f"Start get api. args.applyID:{applyID}.")
     database = _get_db_connection(logger)
-    applystatus = database.get_apply_status(applyID, fields)
+    applystatus = database.get_apply_status(applyID)
 
     logger.info("Completed successfully.")
 
@@ -326,6 +365,7 @@ def get_applystatus(applyID, fields: List[str] = Query(None)):  # pylint: disabl
     return JSONResponse(
         status_code=HTTPStatus.OK.value,
         content=create_applystatus_response(applystatus),
+        headers=JSON_RESPONSE_HEADERS,
     )
 
 
@@ -349,9 +389,11 @@ def get_applystatus_list(
         options.endedAtUntil,
     )
 
-    return_data = _validate_option_for_get_api(fields, None, date_dict, options)
+    return_data = _validate_option_for_get_api(None, fields, date_dict, options)
     if return_data:
-        return JSONResponse(status_code=HTTPStatus.BAD_REQUEST.value, content=return_data)
+        return JSONResponse(
+            status_code=HTTPStatus.BAD_REQUEST.value, content=return_data, headers=JSON_RESPONSE_HEADERS
+        )
 
     config, logger = _initialize()
 
@@ -375,12 +417,12 @@ def get_applystatus_list(
     logger.info("Completed successfully.")
     logger.info(f"End getall api. status_code:{HTTPStatus.OK.value}")
 
-    return JSONResponse(status_code=HTTPStatus.OK.value, content=applyresults)
+    return JSONResponse(status_code=HTTPStatus.OK.value, content=applyresults, headers=JSON_RESPONSE_HEADERS)
 
 
 def _validate_option_for_get_api(
-    fields: str,
-    applyID: str = None,  # pylint: disable=C0103
+    applyID: str,  # pylint: disable=C0103
+    fields: str = None,
     date_dict: dict = None,
     options: GetAllLayoutApplyOptions = None,
 ) -> any:
@@ -454,7 +496,7 @@ def delete_layoutapply(ApplyID: str):  # pylint: disable=C0103
     ]:
         exc = BeingRunningException()
         return_data = {"code": "E40024", "message": exc.message}
-        return JSONResponse(status_code=exc.status_code, content=return_data)
+        return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
     database.delete(ApplyID)
 
@@ -483,7 +525,7 @@ def execute_migration(desiredLayout: DesiredLayout):  # pylint: disable=C0103
     ).execute()
 
     if code != HTTPStatus.OK.value:
-        return JSONResponse(content=get_all_nodes_resp, status_code=code)
+        return JSONResponse(content=get_all_nodes_resp, status_code=code, headers=JSON_RESPONSE_HEADERS)
 
     # Create current Layout
     current_layout = _create_current_layout(get_all_nodes_resp.get("nodes"), desired_layout.get("targetNodeIDs"))
@@ -494,7 +536,7 @@ def execute_migration(desiredLayout: DesiredLayout):  # pylint: disable=C0103
     ).execute()
 
     if code != HTTPStatus.OK.value:
-        return JSONResponse(content=get_available_resources_resp, status_code=code)
+        return JSONResponse(content=get_available_resources_resp, status_code=code, headers=JSON_RESPONSE_HEADERS)
 
     # Set boundDevices info
     desired_layout["desiredLayout"]["boundDevices"] = _create_bound_devices(
@@ -511,10 +553,10 @@ def execute_migration(desiredLayout: DesiredLayout):  # pylint: disable=C0103
         },
     ).execute()
     if code != HTTPStatus.OK.value:
-        return JSONResponse(content=resp, status_code=code)
+        return JSONResponse(content=resp, status_code=code, headers=JSON_RESPONSE_HEADERS)
 
     logger.info(f"End migration_generate api. status_code:{HTTPStatus.OK.value}")
-    return JSONResponse(status_code=HTTPStatus.OK.value, content={"procedures": resp})
+    return JSONResponse(status_code=HTTPStatus.OK.value, content={"procedures": resp}, headers=JSON_RESPONSE_HEADERS)
 
 
 def _create_current_layout(nodes: List, node_ids: List) -> dict:
@@ -536,21 +578,37 @@ def _create_current_layout(nodes: List, node_ids: List) -> dict:
         # return initilize current layout
         pass
     else:
-        # Extract all valid IDs from the input nodes
-        valid_ids = {node.get("id") for node in nodes}
-
-        # Find invalid IDs in node_ids
-        invalid_ids = [node_id for node_id in node_ids if node_id not in valid_ids]
-
-        # Raise exception if invalid IDs are found
-        if invalid_ids:
-            raise IdNotFoundException(invalid_ids)
         # Filter nodes based on node_ids
-        filtered_nodes = [node for node in nodes if node.get("id") in node_ids]
+        filtered_nodes = _create_filtered_nodes(nodes, node_ids)
 
     for node in filtered_nodes:
         current_layout.get("currentLayout").get("nodes").append(_create_device_struct(node.get("resources")))
     return current_layout
+
+
+def _create_filtered_nodes(nodes: List, node_ids: List) -> list:
+    """Create a filtered nodes
+
+    Args:
+        nodes (list): Current node list
+        node_ids: (list): Get nodes by id
+
+    Returns:
+        dict: Created filtered nodes
+    """
+    # Extract all valid IDs from the input nodes
+    valid_ids = {node.get("id") for node in nodes}
+
+    # Find invalid IDs in node_ids
+    invalid_ids = [node_id for node_id in node_ids if node_id not in valid_ids]
+
+    # Raise exception if invalid IDs are found
+    if invalid_ids:
+        raise IdNotFoundException(invalid_ids)
+    # Filter nodes based on node_ids
+    filtered_nodes = [node for node in nodes if node.get("id") in node_ids]
+
+    return filtered_nodes
 
 
 def _create_device_struct(resources: List) -> dict:
@@ -697,15 +755,12 @@ def _set_bound_devices_info(
     return device_pairs, bound_devices
 
 
-def _resume_layoutapply(
-    applyID: str,
-    config: LayoutApplyConfig,
-    logger: Logger,
-):  # pylint: disable=C0103
+def _resume_layoutapply(applyID: str, config: LayoutApplyConfig, logger: Logger):  # pylint: disable=C0103
     """exec cancel layoutapply
     Args:
         applyID: layout applyID
         config: layoutapply config
+        log_config: layoutapply log config
         logger: logger
 
     Returns:
@@ -720,7 +775,7 @@ def _resume_layoutapply(
         input_procedure = {"procedures": proc_result.get("resumeProcedures")}
         response_code, return_data, proc_id = _exec_subprocess(logger, input_procedure, config, applyID, Action.RESUME)
         if response_code is not None:
-            return JSONResponse(status_code=response_code, content=return_data)
+            return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
         database.update_subprocess(proc_id, applyID)
         return_data = {"status": Result.IN_PROGRESS}
         response_code = HTTPStatus.ACCEPTED.value
@@ -730,29 +785,47 @@ def _resume_layoutapply(
             logger, input_procedure, config, applyID, Action.ROLLBACK_RESUME
         )
         if response_code is not None:
-            return JSONResponse(status_code=response_code, content=return_data)
+            return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
         database.update_subprocess(proc_id, applyID)
         return_data = {"status": status, "rollbackStatus": Result.IN_PROGRESS}
         response_code = HTTPStatus.ACCEPTED.value
-    elif status == Result.CANCELED and rollback_status in [
-        Result.COMPLETED,
-        Result.FAILED,
-    ]:
+    else:
+        response_code, return_data, is_already_execute = _create_resume_layoutapply_response(status, rollback_status)
+        if is_already_execute is True:
+            # An error occurs if the status is IN_PROGRESS or CANCELING,
+            # or if the status is CANCELED and the rollback status is IN_PROGRESS.
+            msg = AlreadyExecuteException().message
+            return_data = {"code": "E40022", "message": msg}
+            logger.error(f"[E40022]{msg}")
+            response_code = AlreadyExecuteException().status_code
+
+    logger.info(f"End resume api. status_code:{response_code}")
+    return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
+
+
+def _create_resume_layoutapply_response(status: str, rollback_status: str):
+    """create response for resume layoutapply
+
+    Args:
+        status (str): status
+        rollback_status (str): rollback status
+
+    Returns:
+        response_code (int): response status_code
+        return_data (dict): response content
+        is_already_execute (bool): already execute flag
+    """
+    response_code, return_data, is_already_execute = None, None, False
+    if status == Result.CANCELED and rollback_status in [Result.COMPLETED, Result.FAILED]:
         return_data = {"status": status, "rollbackStatus": rollback_status}
         response_code = HTTPStatus.OK.value
     elif status in [Result.COMPLETED, Result.FAILED] or (status == Result.CANCELED and rollback_status is None):
         return_data = {"status": status}
         response_code = HTTPStatus.OK.value
     else:
-        # An error occurs if the status is IN_PROGRESS or CANCELING,
-        # or if the status is CANCELED and the rollback status is IN_PROGRESS.
-        msg = AlreadyExecuteException().message
-        return_data = {"code": "E40022", "message": msg}
-        logger.error(f"[E40022]{msg}")
-        response_code = AlreadyExecuteException().status_code
+        is_already_execute = True
 
-    logger.info(f"End resume api. status_code:{response_code}")
-    return JSONResponse(status_code=response_code, content=return_data)
+    return response_code, return_data, is_already_execute
 
 
 def _exec_subprocess(
@@ -797,6 +870,7 @@ async def pydantic_handler(request: Request, exc: RequestValidationError):  # py
     return JSONResponse(
         content={"code": code, "message": cus_exc.message},
         status_code=cus_exc.status_code,
+        headers=JSON_RESPONSE_HEADERS,
     )
 
 
@@ -809,6 +883,7 @@ async def jsonschema_handler(request: Request, exc: ValidationError):  # pylint:
     return JSONResponse(
         content={"code": code, "message": cus_exc.message},
         status_code=cus_exc.status_code,
+        headers=JSON_RESPONSE_HEADERS,
     )
 
 
@@ -816,11 +891,8 @@ async def jsonschema_handler(request: Request, exc: ValidationError):  # pylint:
 async def operational_error_handler(_, exc: psycopg2.OperationalError):  # pylint:disable=W0613
     """Custom error handler. Return a response in case of a DB connection error."""
     cus_exc = OperationalError(exc)
-    return_data = {
-        "code": "E40018",
-        "message": cus_exc.message,
-    }
-    return JSONResponse(status_code=cus_exc.status_code, content=return_data)
+    return_data = {"code": "E40018", "message": cus_exc.message}
+    return JSONResponse(status_code=cus_exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(psycopg2.ProgrammingError)
@@ -828,18 +900,15 @@ async def programming_error_handler(_, exc: psycopg2.ProgrammingError):  # pylin
     """Custom error handler. Return a response when a DB connection query fails."""
     cus_exc = ProgrammingError(exc)
     return_data = {"code": "E40019", "message": cus_exc.message}
-    return JSONResponse(status_code=cus_exc.status_code, content=return_data)
+    return JSONResponse(status_code=cus_exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(IdNotFoundException)
 async def id_not_found_handler(request: Request, exc: IdNotFoundException):  # pylint:disable=W0613
     """Custom error handler. Return a response when a non-existent ID is specified."""
     code = "E50010" if request.url.path.endswith("migration-procedures") else "E40020"
-    return_data = {
-        "code": code,
-        "message": exc.message,
-    }
-    return JSONResponse(status_code=exc.status_code, content=return_data)
+    return_data = {"code": code, "message": exc.message}
+    return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(SettingFileLoadException)
@@ -847,11 +916,8 @@ async def setting_file_load_failed_handler(request: Request, exc: SettingFileLoa
     """Custom error handler. Return a response for a configuration file loading error."""
     # If the request is for migration procedure generation, the code changes, so it is being determined.
     code = "E50002" if request.url.path.endswith("migration-procedures") else "E40002"
-    return_data = {
-        "code": code,
-        "message": exc.message,
-    }
-    return JSONResponse(status_code=exc.status_code, content=return_data)
+    return_data = {"code": code, "message": exc.message}
+    return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(SecretInfoGetException)
@@ -859,11 +925,8 @@ async def secret_file_load_failed_handler(request: Request, exc: SecretInfoGetEx
     """Custom error handler. Return a response for a secret file loading error."""
     # If the request is for migration procedure generation, the code changes, so it is being determined.
     code = "E50008" if request.url.path.endswith("migration-procedures") else "E40030"
-    return_data = {
-        "code": code,
-        "message": exc.message,
-    }
-    return JSONResponse(status_code=exc.status_code, content=return_data)
+    return_data = {"code": code, "message": exc.message}
+    return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(LoggerLoadException)
@@ -871,33 +934,31 @@ async def logger_load_failed_handler(request: Request, exc: LoggerLoadException)
     """Custom error handler. Return a response for an error when loading logger information."""
     # If the request is for migration procedure generation, the code changes, so it is being determined.
     code = "E50009" if request.url.path.endswith("migration-procedures") else "E40031"
-    return_data = {
-        "code": code,
-        "message": exc.message,
-    }
-    return JSONResponse(status_code=exc.status_code, content=return_data)
+    return_data = {"code": code, "message": exc.message}
+    return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(MultipleInstanceError)
 async def multiple_instance_exception_handler(_: Request, exc: MultipleInstanceError):
     """Returning a response if a custom error handler fails to MultipleInstanceError"""
     return_data = {"code": "E40010", "message": exc.message}
-    return JSONResponse(status_code=exc.status_code, content=return_data)
+    return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 @app.exception_handler(SuspendedDataExistException)
 async def suspended_data_exist_exception_handler(_: Request, exc: SuspendedDataExistException):
     """Returning a response if a custom error handler fails to SuspendedDataExistException"""
     return_data = {"code": "E40027", "message": exc.message}
-    return JSONResponse(status_code=exc.status_code, content=return_data)
+    return JSONResponse(status_code=exc.status_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
 
 def main():  # pragma: no cover
     """entry point"""
     try:
         config = LayoutApplyConfig()
+        config.load_log_configs()
     except (SettingFileLoadException, ValidationError) as error:
-        exc = SettingFileLoadException(error.message)
+        exc = SettingFileLoadException(error.message, "layoutapply_config.yaml")
         print(
             exc.message,
             file=sys.stderr,

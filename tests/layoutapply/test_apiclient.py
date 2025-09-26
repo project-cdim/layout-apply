@@ -13,7 +13,9 @@
 #  under the License.
 """Test of the API Client Package"""
 
-import json
+import io
+import logging
+import logging.config
 import re
 import types
 from logging import ERROR
@@ -35,6 +37,7 @@ from layoutapply.apiclient import (
     PowerOffAPI,
     PowerOnAPI,
 )
+from layoutapply.common.logger import Logger
 from layoutapply.const import ApiExecuteResultIdx, ApiUri
 from layoutapply.data import Details, IsOsBoot, Procedure
 from layoutapply.setting import LayoutApplyConfig
@@ -50,6 +53,7 @@ class TestHarwareManageAPIBase:
     def test_common_can_request(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -82,7 +86,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -177,6 +181,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -202,7 +207,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -260,6 +265,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -292,7 +298,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -407,6 +413,7 @@ class TestHarwareManageAPIBase:
     def test_common_no_retry_when_max_retry_is_0(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -439,7 +446,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -485,6 +492,7 @@ class TestHarwareManageAPIBase:
     def test_common_no_retry_when_failure_code_not_for_retry(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -517,7 +525,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -571,6 +579,7 @@ class TestHarwareManageAPIBase:
     def test_common_retry_on_failure_when_status_code_not_for_retry(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -603,7 +612,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -657,11 +666,16 @@ class TestHarwareManageAPIBase:
         assert result.status == "FAILED"
         assert result.statusCode == 502
 
-    def test_common_no_retry_when_timed_out(self, httpserver: HTTPServer, caplog, init_db_instance):
+    def test_common_no_retry_when_timed_out(self, httpserver: HTTPServer, init_db_instance, mocker, caplog):
         timeout_sec = 1
-        # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -694,7 +708,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -728,17 +742,16 @@ class TestHarwareManageAPIBase:
         execute_result = api_obj.execute(paylod)
         result: Details = execute_result[ApiExecuteResultIdx.DETAIL]
         httpserver.clear()
+
         # assert
         assert result.status == "FAILED"
         assert result.statusCode == 504
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == "[E40003]Timeout: Could not connect to server. operationID:[1]"
-        )
+        assert "[E40003]Timeout: Could not connect to server. operationID:[1]" in caplog.text
 
     def test_common_retry_each_when_retry_on_status_and_failure(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -771,7 +784,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -826,6 +839,7 @@ class TestHarwareManageAPIBase:
     def test_poweroff_can_request_to_poweroff_api(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -847,7 +861,7 @@ class TestHarwareManageAPIBase:
                     },
                     "timeout": 10,
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -896,6 +910,7 @@ class TestHarwareManageAPIBase:
     def test_connect_can_request_to_connect_api(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = ConnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -928,7 +943,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -984,6 +999,7 @@ class TestHarwareManageAPIBase:
     def test_connect_becomes_failed_when_failed_to_get_device_info(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = ConnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1016,7 +1032,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1063,6 +1079,7 @@ class TestHarwareManageAPIBase:
     def test_connect_can_request_when_powercapability_is_true(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = ConnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1095,7 +1112,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1160,6 +1177,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = ConnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1192,7 +1210,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1253,6 +1271,7 @@ class TestHarwareManageAPIBase:
     def test_disconnect_can_request_to_disconnect_api(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1301,7 +1320,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1357,6 +1376,7 @@ class TestHarwareManageAPIBase:
     def test_disconnect_can_request_when_powercapability_is_true(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1405,7 +1425,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1466,6 +1486,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1514,7 +1535,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1568,6 +1589,7 @@ class TestHarwareManageAPIBase:
     def test_disconnect_becomes_failed_when_failed_to_get_device_info(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1616,7 +1638,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1676,6 +1698,7 @@ class TestHarwareManageAPIBase:
     def test_common_result_is_500_when_connect_failure_occurred(self, init_db_instance, mocker):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -1708,7 +1731,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1741,7 +1764,7 @@ class TestHarwareManageAPIBase:
         assert result.responseBody == {
             "code": "E40007",
             "message": "Connection error occurred. Please check if the URL is correct. http://10.000.111.111:8000/test",
-            # "message": f"Connection error occurred. Please check if the URL is correct. http://localhost:48889/dagsw/api/v1/devices/{targetDeviceID}/power",
+            # "message": f"Connection error occurred. Please check if the URL is correct. http://localhost:48889/cdim/api/v1/devices/{targetDeviceID}/power",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 500
@@ -1754,18 +1777,24 @@ class TestHarwareManageAPIBase:
         ],
     )
     def test_connect_failure_when_power_check_polling_exceeded(
-        self, httpserver: HTTPServer, capfd, caplog, test_response, init_db_instance
+        self, httpserver: HTTPServer, capfd, test_response, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = ConnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -1815,7 +1844,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1856,7 +1885,20 @@ class TestHarwareManageAPIBase:
         )
 
         # act
-        _ = api_obj.execute(paylod)
+        result = api_obj.execute(paylod)
+
+        # assert
+        if '"powerState": "PoweringOn"' in test_response:
+            current_state = "PoweringOn"
+        else:
+            current_state = None
+        expected_body = {
+            "code": "E40029",
+            "message": "Power state did not change as expected after turning the power Off."
+            + f"deviceID: {targetDeviceID}, current: {current_state}, expect: Off",
+        }
+
+        assert result[0].responseBody == expected_body
         # API is executed the number of times specified in the polling settings plus one additional time, including execution for determining the device type when the power is initially turned off.
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called GET API.") == 4
@@ -1864,18 +1906,24 @@ class TestHarwareManageAPIBase:
         assert "[E40029]Power state did not change as expected after turning the power On." in caplog.text
 
     def test_connect_result_is_success_when_last_polling_attempt_succeeded(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = ConnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -1925,7 +1973,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -1990,24 +2038,23 @@ class TestHarwareManageAPIBase:
         result: Details = api_obj.execute(paylod)[ApiExecuteResultIdx.DETAIL]
         # mockup returning a 204 status is called twice, as the polling succeeds on the third attempt.
         out, _ = capfd.readouterr()
+
         assert out.count("[Assertion]Called GET API.") == 2
         # No error logs are being output.
-        assert len(caplog.record_tuples) == 0
+        assert "ERROR" not in caplog.text
         assert result.status == "COMPLETED"
 
-    def test_disconnect_becomes_failed_when_failed_to_disconnect(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
-    ):
+    def test_disconnect_becomes_failed_when_failed_to_disconnect(self, httpserver: HTTPServer, capfd, init_db_instance):
         # arrange
-        caplog.set_level(ERROR)
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -2062,7 +2109,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2116,18 +2163,24 @@ class TestHarwareManageAPIBase:
         ],
     )
     def test_disconnect_failure_when_power_check_polling_exceeded(
-        self, httpserver: HTTPServer, capfd, caplog, test_response, init_db_instance
+        self, httpserver: HTTPServer, capfd, test_response, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -2182,7 +2235,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2216,7 +2269,20 @@ class TestHarwareManageAPIBase:
         )
 
         # act
-        _ = api_obj.execute(paylod)
+        result = api_obj.execute(paylod)
+
+        # assert
+        if '"powerState": "PoweringOff"' in test_response:
+            current_state = "PoweringOff"
+        else:
+            current_state = None
+        expected_body = {
+            "code": "E40029",
+            "message": "Power state did not change as expected after turning the power Off."
+            + f"deviceID: {targetDeviceID}, current: {current_state}, expect: Off",
+        }
+
+        assert result[0].responseBody == expected_body
         # API is executed the number of times specified in the polling settings plus one additional time, including execution for determining the device type when the power is initially turned off.
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called GET API.") == 5
@@ -2224,18 +2290,24 @@ class TestHarwareManageAPIBase:
         assert "[E40029]Power state did not change as expected after turning the power Off." in caplog.text
 
     def test_disconnect_result_is_success_when_last_polling_attempt_succeeded(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = DisconnectAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -2290,7 +2362,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2352,16 +2424,18 @@ class TestHarwareManageAPIBase:
 
         # act
         result: Details = api_obj.execute(paylod)[ApiExecuteResultIdx.DETAIL]
+
         # mockup returning a 204 status is called twice, as the polling succeeds on the third attempt.
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called GET API.") == 2
         # No error logs are being output.
-        assert len(caplog.record_tuples) == 0
+        assert "ERROR" not in caplog.text
         assert result.status == "COMPLETED"
 
     def test_common_no_failure_when_raw_code_returned_on_abnormal_exit(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2394,7 +2468,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2437,6 +2511,7 @@ class TestHarwareManageAPIBase:
     def test_common_result_is_500_when_unexpected_failure_occurred(self, mocker, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2469,7 +2544,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2502,6 +2577,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2534,12 +2610,14 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
         # Logger some error occurred during initialization.
-        mocker.patch("layoutapply.apiclient.Logger").side_effect = Exception("Log Error")
+        mocker.patch.object(
+            Logger, "__init__", side_effect=Exception("Internal server error. Failed in log initialization")
+        )
 
         uri = config.hardware_control.get("uri")
         httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
@@ -2594,6 +2672,7 @@ class TestHarwareManageAPIBase:
     def test_common_no_retry_when_invalid_retry_setting(self, httpserver: HTTPServer, retry_targets, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2619,7 +2698,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2683,6 +2762,7 @@ class TestHarwareManageAPIBase:
         is_os_boot_status_code = 500
         is_os_boot_response = {"code": "Exxxxx", "message": "something error"}
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2715,7 +2795,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2785,6 +2865,7 @@ class TestHarwareManageAPIBase:
             "IpAddress": "xxx.xxx.xxx.xxx",
         }
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2817,7 +2898,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2882,6 +2963,7 @@ class TestHarwareManageAPIBase:
         is_os_boot_status_code = 200
         is_os_boot_response = {"status": True, "IpAddress": "xxx.xxx.xxx.xxx"}
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -2914,7 +2996,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -2972,6 +3054,7 @@ class TestHarwareManageAPIBase:
             "message": "A non-existent CPU device was specified.",
         }
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3004,7 +3087,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3056,6 +3139,7 @@ class TestHarwareManageAPIBase:
         # arrange
         # act
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3088,7 +3172,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3104,6 +3188,7 @@ class TestHarwareManageAPIBase:
         # arrange
         # act
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3138,7 +3223,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3151,6 +3236,7 @@ class TestHarwareManageAPIBase:
         # arrange
         # act
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3182,7 +3268,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3195,6 +3281,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3227,7 +3314,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3258,6 +3345,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3290,7 +3378,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3317,11 +3405,17 @@ class TestHarwareManageAPIBase:
         _ = api_obj.execute(paylod)
 
     def test_isosboot_failure_when_polling_exceeded_limit(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3354,7 +3448,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3379,19 +3473,35 @@ class TestHarwareManageAPIBase:
         )
 
         # act
-        _ = api_obj.execute(paylod)
+        result = api_obj.execute(paylod)
+
+        # assert
+        expected_body = {
+            "code": "E40032",
+            "message": f"The operating system failed to boot after turning the power on. deviceID: {targetDeviceID}",
+        }
+        assert result.responseBody == expected_body
+        assert result.statusCode == 200
+
         # API is being executed the number of times specified in the polling settings.
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called IS OS API.") == 3
         # Error logs are being output.
         assert "[E40021]Confirmed OS boot failure." in caplog.text
+        assert "[E40032]The operating system failed to boot after turning the power on." in caplog.text
 
     def test_isosboot_result_is_success_when_last_polling_attempt_succeeded(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3424,7 +3534,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3456,15 +3566,16 @@ class TestHarwareManageAPIBase:
 
         # act
         result: IsOsBoot = api_obj.execute(paylod)
+
         # mockup returning a 204 status is called twice, as the polling succeeds on the third attempt.
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called IS OS API.") == 2
         # No error logs are being output.
-        assert len(caplog.record_tuples) == 0
+        assert "ERROR" not in caplog.text
         assert result.statusCode == 200
 
     def test_isosboot_no_polling_when_skipped_status_code_returned(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance
     ):
         is_os_boot_status_code = 400
         is_os_boot_response = {
@@ -3472,8 +3583,8 @@ class TestHarwareManageAPIBase:
             "message": "A non-existent CPU device was specified.",
         }
         # arrange
-        caplog.set_level(ERROR)
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3506,7 +3617,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3527,15 +3638,21 @@ class TestHarwareManageAPIBase:
         )
 
     def test_isosboot_failure_when_no_status_in_response_body(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
     ):
         is_os_boot_status_code = 200
         is_os_boot_response = {
             "IPAddress": "xxxx.xxxx.xxxx.xxx",
         }
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3568,7 +3685,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3591,19 +3708,27 @@ class TestHarwareManageAPIBase:
         # act
         result: IsOsBoot = api_obj.execute(paylod)
 
-        assert len(caplog.record_tuples) == 1
+        assert "ERROR" in caplog.text
         assert "status" not in result.responseBody
         assert "[E40021]Confirmed OS boot failure." in caplog.text
         assert result.statusCode == 200
 
-    def test_isosboot_failure_when_response_code_is_500(self, httpserver: HTTPServer, capfd, caplog, init_db_instance):
+    def test_isosboot_failure_when_response_code_is_500(
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
+    ):
         is_os_boot_status_code = 200
         is_os_boot_response = {
             "IPAddress": "xxxx.xxxx.xxxx.xxx",
         }
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3636,7 +3761,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3659,13 +3784,13 @@ class TestHarwareManageAPIBase:
         # act
         result: IsOsBoot = api_obj.execute(paylod)
 
-        assert len(caplog.record_tuples) == 1
+        assert "ERROR" in caplog.text
         assert "status" not in result.responseBody
         assert "[E40021]Confirmed OS boot failure." in caplog.text
         assert result.statusCode == 200
 
     def test_isosboot_failure_when_status_not_bool_in_response(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog
     ):
         is_os_boot_status_code = 200
         is_os_boot_response = {
@@ -3673,8 +3798,14 @@ class TestHarwareManageAPIBase:
             "IPAddress": "xxxx.xxxx.xxxx.xxx",
         }
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = IsOSBootAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3707,7 +3838,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 200,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3730,7 +3861,7 @@ class TestHarwareManageAPIBase:
         # act
         result: IsOsBoot = api_obj.execute(paylod)
 
-        assert len(caplog.record_tuples) == 1
+        assert "ERROR" in caplog.text
         assert "status" in result.responseBody
         assert isinstance(result.responseBody.get("status"), bool) is False
         assert "[E40021]Confirmed OS boot failure." in caplog.text
@@ -3746,6 +3877,7 @@ class TestHarwareManageAPIBase:
             "message": "A non-existent CPU device was specified.",
         }
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3778,7 +3910,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3834,6 +3966,7 @@ class TestHarwareManageAPIBase:
             "IPAddress": "xxxx.xxxx.xxxx.xxx",
         }
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3866,7 +3999,7 @@ class TestHarwareManageAPIBase:
                         "timeout": 10,
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3916,6 +4049,7 @@ class TestHarwareManageAPIBase:
     def test_poweroff_can_receive_failure_result_when_abnormal_exit(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -3936,7 +4070,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -3991,18 +4125,24 @@ class TestHarwareManageAPIBase:
         ],
     )
     def test_poweroff_failure_when_power_status_polling_exceeded(
-        self, httpserver: HTTPServer, capfd, caplog, test_response, init_db_instance
+        self, httpserver: HTTPServer, capfd, test_response, init_db_instance, mocker, caplog
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -4041,7 +4181,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4070,26 +4210,46 @@ class TestHarwareManageAPIBase:
         )
 
         # act
-        _ = api_obj.execute(paylod)
+        result = api_obj.execute(paylod)
+
+        # assert
+        if '"powerState": "PoweringOff"' in test_response:
+            current_state = "PoweringOff"
+        else:
+            current_state = None
+        expected_body = {
+            "code": "E40029",
+            "message": "Power state did not change as expected after turning the power Off."
+            + f"deviceID: {targetDeviceID}, current: {current_state}, expect: Off",
+        }
+
+        assert result[0].responseBody == expected_body
         # API is executed the number of times specified in the polling settings plus one additional time, including execution for determining the device type when the power is initially turned off.
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called IS GET API.") == 4
+
         # Error logs are being output.
-        assert "[E40023]Failed to get device information." in caplog.text
+        assert "[E40029]Power state did not change as expected after turning the power Off." in caplog.text
 
     def test_poweroff_result_is_success_when_last_power_status_polling_succeeded(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance, mocker, caplog, docker_services
     ):
         # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -4128,7 +4288,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4168,20 +4328,21 @@ class TestHarwareManageAPIBase:
         # act
         execute_result = api_obj.execute(paylod)
         result: Details = execute_result[ApiExecuteResultIdx.DETAIL]
+
         httpserver.clear()
         # mock returning "PoweringOff" is called twice (since it succeeds on the third polling attempt).
         out, _ = capfd.readouterr()
         assert out.count("[Assertion]Called IS GET API.") == 2
         # No error logs are being output.
-        assert len(caplog.record_tuples) == 0
+        assert "ERROR" not in caplog.text
         assert result.statusCode == 200
 
     def test_deviceinfo_failure_log_output_when_non_200_response_for_device_info(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance
     ):
         # arrange
-        caplog.set_level(ERROR)
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -4202,7 +4363,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4246,18 +4407,18 @@ class TestHarwareManageAPIBase:
         assert result.statusCode == 500
 
     def test_deviceinfo_failure_when_failure_during_device_info_polling(
-        self, httpserver: HTTPServer, capfd, caplog, init_db_instance
+        self, httpserver: HTTPServer, capfd, init_db_instance
     ):
         # arrange
-        caplog.set_level(ERROR)
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
                 "get_info_conf": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -4296,7 +4457,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4345,6 +4506,7 @@ class TestHarwareManageAPIBase:
     def test_poweroff_poweroff_can_retry_by_settings(self, httpserver: HTTPServer, init_db_instance):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOffAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -4365,7 +4527,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4437,6 +4599,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = GetDeviceInformationAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -4457,7 +4620,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4503,6 +4666,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = GetDeviceInformationAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -4523,7 +4687,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )
@@ -4562,6 +4726,7 @@ class TestHarwareManageAPIBase:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         api_obj: HarwareManageAPIBase = GetDeviceInformationAPI(
             **{
                 "hardware_control_conf": config.hardware_control,
@@ -4582,7 +4747,7 @@ class TestHarwareManageAPIBase:
                         },
                     },
                 },
-                "logger_args": config.logger_args,
+                "logger_args": config.log_config,
                 "server_connection_conf": config.server_connection,
             }
         )

@@ -21,9 +21,9 @@ import requests
 from pytest_httpserver import HeaderValueMatcher, HTTPServer
 from werkzeug import Request, Response
 
-from layoutapply.cdimlogger import Logger
 from layoutapply.common.api import BaseApiClient
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.common.logger import Logger
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 
 # NOTICE: Add the dummy server's IP/HOST to the NO_PROXY environment variable.
 # os.environ["NO_PROXY"] = "localhost"
@@ -46,7 +46,7 @@ class DummayApiClient(BaseApiClient):
         self.retry_interval = config.server_connection.get("retry").get("interval")
         self.retry_max_count = config.server_connection.get("retry").get("max_count")
         print(config)
-        self.logger = Logger(**config.logger_args)
+        self.logger = Logger(LayoutApplyLogConfig().log_config)
         super().__init__(self.logger, self.retry_interval, self.retry_max_count)
         self.url = url
 

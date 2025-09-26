@@ -20,8 +20,8 @@ from typing import Any
 from jsonschema import ValidationError, validate
 from requests import Response, exceptions
 
-from layoutapply.cdimlogger import Logger
 from layoutapply.common.api import BaseApiClient
+from layoutapply.common.logger import Logger
 from layoutapply.const import ApiHeaders, ApiUri
 from layoutapply.custom_exceptions import (
     ConnectTimeoutError,

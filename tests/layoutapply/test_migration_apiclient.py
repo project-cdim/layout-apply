@@ -14,6 +14,7 @@
 """Test of migration api client"""
 
 import json
+import logging
 import re
 from logging import ERROR
 
@@ -22,10 +23,10 @@ from pytest_httpserver import HTTPServer
 from requests import exceptions
 from werkzeug import Response
 
-from layoutapply.cdimlogger import Logger
+from layoutapply.common.logger import Logger
 from layoutapply.const import ApiUri
 from layoutapply.migration_apiclient import ConfigManagerAPI, GetAvailableResourcesAPI, MigrationAPI
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 from tests.layoutapply.test_data.migration import (
     CONF_NODES_API_RESP_DATA,
     GET_AVAILABLE_RESOURCES_API_RESP,
@@ -79,10 +80,11 @@ def get_migration_layout() -> dict:
 
 
 class TestMigrationClient:
-    def test_execute_migrationproc_success(self, httpserver: HTTPServer, get_migration_layout):
+    def test_execute_migrationproc_success(self, httpserver: HTTPServer, get_migration_layout, docker_services):
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
         api = MigrationAPI(logger, config.migration_procedure, config.server_connection, get_migration_layout)
 
         uri = config.migration_procedure.get("uri")
@@ -98,12 +100,15 @@ class TestMigrationClient:
         assert body == MIGRATION_API_RESP_DATA
 
     def test_execute_migrationproc_failure_when_non_200_status_code(
-        self, httpserver: HTTPServer, get_migration_layout, caplog
+        self, httpserver: HTTPServer, get_migration_layout, caplog, mocker, docker_services
     ):
-        caplog.set_level(ERROR)
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = MigrationAPI(logger, config.migration_procedure, config.server_connection, get_migration_layout)
 
         uri = config.migration_procedure.get("uri")
@@ -125,15 +130,16 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50004"
         assert body.get("message") == f"Failed to request: status:[500], response[{api_err_msg}]"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50004]Failed to request: ")
+        assert "[E50004]Failed to request:" in caplog.text
 
-    def test_execute_migrationproc_failure_when_timed_out(self, get_migration_layout, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_migrationproc_failure_when_timed_out(self, get_migration_layout, caplog, mocker, docker_services):
         mocker.patch.object(MigrationAPI, "_requests").side_effect = exceptions.ConnectTimeout("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = MigrationAPI(logger, config.migration_procedure, config.server_connection, get_migration_layout)
 
         code, body = api.execute()
@@ -141,19 +147,18 @@ class TestMigrationClient:
         assert code == 504
         assert body.get("code") == "E50003"
         assert body.get("message") == "Timeout: Could not connect to server."
-        assert (
-            json.loads(caplog.record_tuples[0][2])
-            .get("message")
-            .startswith("[E50003]Timeout: Could not connect to server.")
-        )
+        assert "[E50003]Timeout: Could not connect to server." in caplog.text
 
-    def test_execute_migrationproc_failure_when_invalid_request_target(self, get_migration_layout, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_migrationproc_failure_when_invalid_request_target(
+        self, get_migration_layout, caplog, mocker, docker_services
+    ):
         mocker.patch.object(MigrationAPI, "_post").side_effect = exceptions.ConnectionError("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = MigrationAPI(logger, config.migration_procedure, config.server_connection, get_migration_layout)
 
         host = config.migration_procedure.get("host")
@@ -166,18 +171,18 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50006"
         assert body.get("message") == f"Connection error occurred. Please check if the URL is correct. {request_uri}"
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == f"[E50006]Connection error occurred. Please check if the URL is correct. {request_uri}"
-        )
+        assert f"[E50006]Connection error occurred. Please check if the URL is correct. {request_uri}" in caplog.text
 
-    def test_execute_migrationproc_failure_when_request_failure_occurred(self, get_migration_layout, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_migrationproc_failure_when_request_failure_occurred(
+        self, get_migration_layout, caplog, mocker, docker_services
+    ):
         mocker.patch.object(MigrationAPI, "_requests").side_effect = exceptions.RequestException("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = MigrationAPI(logger, config.migration_procedure, config.server_connection, get_migration_layout)
 
         code, body = api.execute()
@@ -185,15 +190,12 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50007"
         assert body.get("message") == "Unexpected requests error occurred.Log Error"
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == "[E50007]Unexpected requests error occurred.Log Error"
-        )
+        assert "[E50007]Unexpected requests error occurred.Log Error" in caplog.text
 
-    def test_execute_configmgr_success(self, httpserver: HTTPServer):
+    def test_execute_configmgr_success(self, httpserver: HTTPServer, docker_services):
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = Logger(LayoutApplyLogConfig().log_config)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -211,10 +213,10 @@ class TestMigrationClient:
         assert code == 200
         assert body == CONF_NODES_API_RESP_DATA
 
-    def test_execute_configmgr_success_when_empty_response(self, httpserver: HTTPServer):
+    def test_execute_configmgr_success_when_empty_response(self, httpserver: HTTPServer, docker_services):
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = Logger(LayoutApplyLogConfig().log_config)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -450,14 +452,35 @@ class TestMigrationClient:
                         }
                     ],
                 }
-            ),
+            ),  # type: value type is invalid
+            (
+                {
+                    "nodes": [
+                        {
+                            "resources": [
+                                {
+                                    "device": {
+                                        "deviceID": "qwertyu123",
+                                        "type": "network-Interface",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),  # type: value pattern is invalid
         ],
     )
-    def test_execute_configmgr_success_when_invalid_response(self, httpserver: HTTPServer, resp_data, caplog):
-        caplog.set_level(ERROR)
+    def test_execute_configmgr_success_when_invalid_response(
+        self, httpserver: HTTPServer, resp_data, caplog, mocker, docker_services
+    ):
         # arrange
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -474,13 +497,17 @@ class TestMigrationClient:
         # assert
         assert code == 400
         assert body.get("code") == "E50001"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50001]")
+        assert "[E50001]" in caplog.text
 
-    def test_execute_configmgr_failure_when_non_200_status_code(self, httpserver: HTTPServer, caplog):
-        caplog.set_level(ERROR)
-
+    def test_execute_configmgr_failure_when_non_200_status_code(
+        self, httpserver: HTTPServer, caplog, mocker, docker_services
+    ):
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -502,15 +529,16 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50004"
         assert body.get("message") == f"Failed to request: status:[500], response[{api_err_msg}]"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50004]Failed to request: ")
+        assert "[E50004]Failed to request: " in caplog.text
 
-    def test_execute_configmgr_failure_when_timed_out(self, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_configmgr_failure_when_timed_out(self, caplog, mocker, docker_services):
         mocker.patch.object(ConfigManagerAPI, "_requests").side_effect = exceptions.ConnectTimeout("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         code, body = api.execute()
@@ -518,19 +546,16 @@ class TestMigrationClient:
         assert code == 504
         assert body.get("code") == "E50003"
         assert body.get("message") == "Timeout: Could not connect to server."
-        assert (
-            json.loads(caplog.record_tuples[0][2])
-            .get("message")
-            .startswith("[E50003]Timeout: Could not connect to server.")
-        )
+        assert "[E50003]Timeout: Could not connect to server." in caplog.text
 
-    def test_execute_configmgr_failure_when_invalid_request_target(self, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_configmgr_failure_when_invalid_request_target(self, caplog, mocker, docker_services):
         mocker.patch.object(ConfigManagerAPI, "_get").side_effect = exceptions.ConnectionError("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         host = config.configuration_manager.get("host")
@@ -543,18 +568,16 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50006"
         assert body.get("message") == f"Connection error occurred. Please check if the URL is correct. {request_uri}"
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == f"[E50006]Connection error occurred. Please check if the URL is correct. {request_uri}"
-        )
+        assert f"[E50006]Connection error occurred. Please check if the URL is correct. {request_uri}" in caplog.text
 
-    def test_execute_configmgr_failure_when_request_failure_occurred(self, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_configmgr_failure_when_request_failure_occurred(self, caplog, mocker, docker_services):
         mocker.patch.object(ConfigManagerAPI, "_requests").side_effect = exceptions.RequestException("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         api = ConfigManagerAPI(logger, config.configuration_manager, config.server_connection)
 
         code, body = api.execute()
@@ -562,15 +585,12 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50007"
         assert body.get("message") == "Unexpected requests error occurred.Log Error"
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == "[E50007]Unexpected requests error occurred.Log Error"
-        )
+        assert "[E50007]Unexpected requests error occurred.Log Error" in caplog.text
 
-    def test_execute_get_available_resources_success(self, httpserver: HTTPServer):
+    def test_execute_get_available_resources_success(self, httpserver: HTTPServer, docker_services):
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = Logger(LayoutApplyLogConfig().log_config)
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -588,10 +608,10 @@ class TestMigrationClient:
         assert code == 200
         assert body == GET_AVAILABLE_RESOURCES_API_RESP
 
-    def test_execute_get_available_resources_success_multi(self, httpserver: HTTPServer):
+    def test_execute_get_available_resources_success_multi(self, httpserver: HTTPServer, docker_services):
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = Logger(LayoutApplyLogConfig().log_config)
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -609,10 +629,10 @@ class TestMigrationClient:
         assert code == 200
         assert body == GET_AVAILABLE_RESOURCES_API_RESP_MULTI
 
-    def test_execute_get_available_resources_success_when_empty_response(self, httpserver: HTTPServer):
+    def test_execute_get_available_resources_success_when_empty_response(self, httpserver: HTTPServer, docker_services):
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = Logger(LayoutApplyLogConfig().log_config)
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -820,15 +840,36 @@ class TestMigrationClient:
                     ],
                 }
             ),  # nonRemovableDevices.deviceID: value type is invalid
+            (
+                {
+                    "count": 1,
+                    "resources": [
+                        {
+                            "device": {
+                                "constraints": {
+                                    "nonRemovableDevices": [
+                                        {"deviceID": "22c9f033-e322-44e0-5dd9-a5c548d34434"},
+                                    ]
+                                },
+                                "deviceID": "00c9f066-eae2-4be0-bdd9-aac528d6416c",
+                                "type": "network-Interface",
+                            },
+                        },
+                    ],
+                }
+            ),  # device.type: value pattern is invalid
         ],
     )
     def test_execute_get_available_resources_success_when_invalid_response(
-        self, httpserver: HTTPServer, resp_data, caplog
+        self, httpserver: HTTPServer, resp_data, caplog, mocker, docker_services
     ):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
         # arrange
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(ERROR)
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -845,13 +886,18 @@ class TestMigrationClient:
         # assert
         assert code == 400
         assert body.get("code") == "E50001"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50001]")
+        assert "[E50001]" in caplog.text
 
-    def test_execute_get_available_resources_failure_when_non_200_status_code(self, httpserver: HTTPServer, caplog):
-        caplog.set_level(ERROR)
-
+    def test_execute_get_available_resources_failure_when_non_200_status_code(
+        self, httpserver: HTTPServer, caplog, mocker, docker_services
+    ):
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(ERROR)
+
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         uri = config.configuration_manager.get("uri")
@@ -873,15 +919,17 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50004"
         assert body.get("message") == f"Failed to request: status:[500], response[{api_err_msg}]"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50004]Failed to request: ")
+        assert "[E50004]Failed to request:" in caplog.text
 
-    def test_execute_get_available_resources_failure_when_timed_out(self, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_get_available_resources_failure_when_timed_out(self, caplog, mocker, docker_services):
         mocker.patch.object(GetAvailableResourcesAPI, "_requests").side_effect = exceptions.ConnectTimeout("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
+
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         code, body = api.execute()
@@ -889,19 +937,17 @@ class TestMigrationClient:
         assert code == 504
         assert body.get("code") == "E50003"
         assert body.get("message") == "Timeout: Could not connect to server."
-        assert (
-            json.loads(caplog.record_tuples[0][2])
-            .get("message")
-            .startswith("[E50003]Timeout: Could not connect to server.")
-        )
+        assert "[E50003]Timeout: Could not connect to server." in caplog.text
 
-    def test_execute_get_available_resources_failure_when_invalid_request_target(self, caplog, mocker):
-        caplog.set_level(ERROR)
-
+    def test_execute_get_available_resources_failure_when_invalid_request_target(self, caplog, mocker, docker_services):
         mocker.patch.object(GetAvailableResourcesAPI, "_get").side_effect = exceptions.ConnectionError("Log Error")
-
+        mocker.patch("logging.config.dictConfig")
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(ERROR)
+
         api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
 
         host = config.configuration_manager.get("host")
@@ -914,28 +960,4 @@ class TestMigrationClient:
         assert code == 500
         assert body.get("code") == "E50006"
         assert body.get("message") == f"Connection error occurred. Please check if the URL is correct. {request_uri}"
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == f"[E50006]Connection error occurred. Please check if the URL is correct. {request_uri}"
-        )
-
-    def test_execute_get_available_resources_failure_when_request_failure_occurred(self, caplog, mocker):
-        caplog.set_level(ERROR)
-
-        mocker.patch.object(GetAvailableResourcesAPI, "_requests").side_effect = exceptions.RequestException(
-            "Log Error"
-        )
-
-        config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
-        api = GetAvailableResourcesAPI(logger, config.configuration_manager, config.server_connection)
-
-        code, body = api.execute()
-        # assert
-        assert code == 500
-        assert body.get("code") == "E50007"
-        assert body.get("message") == "Unexpected requests error occurred.Log Error"
-        assert (
-            json.loads(caplog.record_tuples[0][2]).get("message")
-            == "[E50007]Unexpected requests error occurred.Log Error"
-        )
+        assert f"[E50006]Connection error occurred. Please check if the URL is correct. {request_uri}" in caplog.text

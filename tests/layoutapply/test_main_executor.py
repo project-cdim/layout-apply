@@ -12,13 +12,12 @@
 # License for the specific language governing permissions and limitations
 #  under the License.
 """Test of the Called Subprocess Package"""
-
+import logging
 import pickle
 import secrets
 import string
 import sys
 import tempfile
-from logging import ERROR
 from time import sleep
 
 import psycopg2
@@ -29,7 +28,7 @@ from layoutapply.cli import SubprocOpt
 from layoutapply.common.dateutil import get_str_now
 from layoutapply.const import Action
 from layoutapply.main_executor import exec_run
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 from tests.layoutapply.test_data import procedure
 
 
@@ -41,7 +40,13 @@ def get_applyID():
 @pytest.mark.usefixtures("httpserver_listen_address")
 @pytest.mark.usefixtures("hardwaremgr_fixture")
 def test_run_success(init_db_instance, mocker, get_applyID, caplog):
+    mocker.patch("logging.config.dictConfig")
+    logger = logging.getLogger("logger.py")
+    logger.handlers.clear()
+    logger.addHandler(caplog.handler)
+    logger.setLevel(logging.INFO)
     config = LayoutApplyConfig()
+    config.load_log_configs()
     proc = procedure.single_pattern[0][0]
     mocker.patch("layoutapply.db.create_randomname", return_value=get_applyID)
 
@@ -73,14 +78,20 @@ def test_run_success(init_db_instance, mocker, get_applyID, caplog):
             break
 
 
-def test_run_failure_when_loading_arguments_failed(mocker, capfd, caplog):
-    caplog.set_level(ERROR)
+def test_run_failure_when_loading_arguments_failed(mocker, capfd, caplog, get_applyID):
+    mocker.patch("logging.config.dictConfig")
+    logger = logging.getLogger("logger.py")
+    logger.handlers.clear()
+    logger.addHandler(caplog.handler)
+    logger.setLevel(logging.DEBUG)
+
     config = LayoutApplyConfig()
     proc = procedure.single_pattern[0][0]
     mocker.patch("pickle.loads", side_effect=pickle.PickleError("Parse argument error"))
 
+    apply_id = get_applyID  # fixtureの値をそのまま使う
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as fp:
-        fp.write(pickle.dumps(SubprocOpt(proc, config, get_applyID, Action.REQUEST)).hex())
+        fp.write(pickle.dumps(SubprocOpt(proc, config, apply_id, Action.REQUEST)).hex())
     sys.argv = ["file-name", fp.name]
 
     with pytest.raises(SystemExit) as excinfo:
@@ -88,7 +99,8 @@ def test_run_failure_when_loading_arguments_failed(mocker, capfd, caplog):
 
     assert excinfo.value.code == 5
     out, _ = capfd.readouterr()
+
     # There is no standard output
     assert out == ""
     # There is an error message in the standard error output that starts with the specified error code
-    assert "[E40026]Failed to start subprocess." in caplog.messages[0]
+    assert "[E40026]Failed to start subprocess." in caplog.text

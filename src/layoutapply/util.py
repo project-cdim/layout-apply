@@ -33,38 +33,89 @@ def create_randomname(length: int) -> str:
 
 
 def create_applystatus_response(applystatus: dict) -> dict:
-    """create get_appplystatus response
+    """create get_applystatus response
 
     Args:
-        applystatus (dict): get_appplystatus result
+        applystatus (dict): get_applystatus result
 
     Returns:
-        dict: get_appplystatus response
+        dict: get_applystatus response
     """
 
-    response_dict = applystatus
+    status = applystatus.get("status")
 
-    # Adjusting response content based on status
-    if applystatus.get("status") is not None and applystatus.get("status") == Result.IN_PROGRESS:
-        response_dict = {
-            "applyID": applystatus.get("applyID"),
-            "status": applystatus.get("status"),
-            "startedAt": applystatus.get("startedAt"),
-        }
-        if applystatus.get("resumedAt") is not None:
-            response_dict["resumedAt"] = applystatus.get("resumedAt")
-    elif applystatus.get("status") is not None and applystatus.get("status") == Result.CANCELING:
-        response_dict = {
-            "applyID": applystatus.get("applyID"),
-            "status": applystatus.get("status"),
-            "startedAt": applystatus.get("startedAt"),
-            "canceledAt": applystatus.get("canceledAt"),
-            "executeRollback": applystatus.get("executeRollback"),
-        }
-        if applystatus.get("executeRollback") is True and applystatus.get("rollbackStartedAt") is not None:
+    if status == Result.IN_PROGRESS:
+        return _create_applystatus_response_when_in_progress(applystatus)
+
+    elif status == Result.CANCELING:
+        return _create_applystatus_resuponse_when_in_canceling(applystatus)
+
+    return applystatus
+
+
+def _create_applystatus_resuponse_when_in_canceling(applystatus: dict) -> dict:
+    """create a get_applystatus response when CANCELING
+
+    Args:
+        applystatus (dict): get_applystatus result
+
+    Returns:
+        dict: get_applystatus response
+    """
+    response_dict = {
+        "applyID": applystatus.get("applyID"),
+        "status": applystatus.get("status"),
+        "startedAt": applystatus.get("startedAt"),
+        "canceledAt": applystatus.get("canceledAt"),
+        "executeRollback": applystatus.get("executeRollback"),
+    }
+    if applystatus.get("executeRollback"):
+        if applystatus.get("rollbackResult"):
+            response_dict["rollbackResult"] = applystatus.get("rollbackResult")
+        if applystatus.get("rollbackProcedures"):
+            response_dict["rollbackProcedures"] = applystatus.get("rollbackProcedures")
+        if applystatus.get("rollbackStartedAt"):
             response_dict["rollbackStartedAt"] = applystatus.get("rollbackStartedAt")
-        if applystatus.get("resumedAt") is not None:
-            response_dict["resumedAt"] = applystatus.get("resumedAt")
+    return _create_applystatus_response_with_common_parameters(applystatus, response_dict)
+
+
+def _create_applystatus_response_when_in_progress(applystatus: dict) -> dict:
+    """create a get_applystatus response when IN_PROGRESS
+
+    Args:
+        applystatus (dict): get_applystatus result
+
+    Returns:
+        dict: get_applystatus response
+    """
+    response_dict = {
+        "applyID": applystatus.get("applyID"),
+        "status": applystatus.get("status"),
+        "startedAt": applystatus.get("startedAt"),
+    }
+    return _create_applystatus_response_with_common_parameters(applystatus, response_dict)
+
+
+def _create_applystatus_response_with_common_parameters(applystatus: dict, response_dict: dict) -> dict:
+    """add common parameters to applystatus response
+
+    Args:
+        applystatus (dict): get_applystatus result
+        response_dict (dict): response dictionary to add parameters to
+
+    Returns:
+        dict: get_applystatus response
+    """
+    if applystatus.get("applyResult"):
+        response_dict["applyResult"] = applystatus.get("applyResult")
+    if applystatus.get("resumeProcedures"):
+        response_dict["resumeProcedures"] = applystatus.get("resumeProcedures")
+    if applystatus.get("resumeResult"):
+        response_dict["resumeResult"] = applystatus.get("resumeResult")
+    if applystatus.get("resumedAt"):
+        response_dict["resumedAt"] = applystatus.get("resumedAt")
+    if applystatus.get("procedures"):
+        response_dict["procedures"] = applystatus.get("procedures")
 
     return response_dict
 

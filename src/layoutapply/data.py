@@ -27,8 +27,10 @@ class Procedure:
     operationID: int
     operation: str
     dependencies: list
-    targetDeviceID: str
+    targetDeviceID: str = field(default=None)
+    targetServiceID: str = field(default=None)
     targetCPUID: str = field(default=None)
+    targetRequestInstanceID: str = field(default=None)
 
     @classmethod
     def init_from_dict(cls, procedure_dict):
@@ -46,7 +48,9 @@ class Procedure:
 
 def procedure_dict_factory(items: list[tuple[str, Any]]) -> dict[str, Any]:
     """Dict factory method of the Procedure class.
-    If the operation is boot or shutdown, do not include targetCPUID in the Dict
+    If the operation is boot or shutdown, do not include targetCPUID and targetServiceID in the Dict
+    If the operation is connect or disconnect, do not include targetServiceID in the Dict
+    If the operation is start or stop, do not include targetDeviceID in the Dict
 
     Args:
         items (list[tuple[str, Any]]): Details items.
@@ -59,6 +63,11 @@ def procedure_dict_factory(items: list[tuple[str, Any]]) -> dict[str, Any]:
         adict[key] = value
     if adict["operation"] in (Operation.POWEROFF, Operation.POWERON):
         del adict["targetCPUID"]
+        del adict["targetServiceID"]
+    if adict["operation"] in (Operation.CONNECT, Operation.DISCONNECT):
+        del adict["targetServiceID"]
+    if adict["operation"] in (Operation.START, Operation.STOP):
+        del adict["targetDeviceID"]
     return adict
 
 

@@ -15,111 +15,27 @@
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
-from typing import Any
 
 import requests
 from jsonschema import validate
 
-from layoutapply.cdimlogger.common import (
-    CRITICAL,
-    DEBUG,
-    ERROR,
-    INFO,
-    LOG_BACKUP_FILES,
-    LOG_DIR,
-    LOG_FILES,
-    LOG_ROTATION_SIZE,
-    TAG_APP_LAYOUTAPPLY,
-    WARN,
-)
 from layoutapply.common.config import BaseConfig
 from layoutapply.const import DbConfigName, RequestParameter
 from layoutapply.custom_exceptions import SecretInfoGetException, SettingFileLoadException
 from layoutapply.schema import config as config_schema
-from layoutapply.schema import db_config_schema
+from layoutapply.schema import db_config_schema, log_config_schema
 
 
-@dataclass
-class LogConfig:
-    """Log settings.
-    Refer to logger/impl/standard/standard.py for default settings.
-    """
-
-    logging_level: str = field(default="INFO")
-    log_dir: str = field(default=LOG_DIR)
-    file: str = field(default=LOG_FILES[TAG_APP_LAYOUTAPPLY])
-    # Log rotation file size (unit: bytes)
-    rotation_size: int = field(default=LOG_ROTATION_SIZE)
-    # Number of log file backups
-    backup_files: int = field(default=LOG_BACKUP_FILES)
-    # Standard output determination value (if true, logs are also output to standard output)
-    stdout: bool = field(default=False)
-    # Log configuration tag
-    tag: str = field(default=TAG_APP_LAYOUTAPPLY)
-
-
-def log_dict_factory(items: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Dict factory method of the Details class.
-    If the value is empty, do not include it in the Dict
-
-    Args:
-        items (list[tuple[str, Any]]): Details items.
-
-    Returns:
-        dict[str, Any]: _description_
-    """
-    adict = {}
-    for key, value in items:
-        if key == "logging_level":
-            value = _convert_log_level(value)
-        # Change the key name to match the arguments of GILogger
-        # file → log_file
-        if key == "file":
-            key = "log_file"
-        adict[key] = value
-    return adict
-
-
-def _convert_log_level(log_level: str) -> int:
-    ret: int = INFO
-    match log_level:
-        case "DEBUG":
-            ret = DEBUG
-        case "INFO":
-            ret = INFO
-        case "WARN":
-            ret = WARN
-        case "ERROR":
-            ret = ERROR
-        case "CRITICAL":
-            ret = CRITICAL
-    return ret
-
-
-class LayoutApplyConfig(BaseConfig):
-    """Class for reading configuration files of the LayoutApply function"""
+class LayoutApplyLogConfig(BaseConfig):
+    """Class for reading logging configuration files of the LayoutApply function"""
 
     def __init__(self) -> None:
         try:
-            super().__init__("layoutapply.config", "layoutapply_config.yaml")
-            validate(instance=self._config, schema=config_schema)
-            self._load_configs()
+            super().__init__("layoutapply.config", "layoutapply_log_config.yaml")
+            validate(instance=self._config, schema=log_config_schema)
             self._validate_log_dir()
         except Exception as error:
-            raise SettingFileLoadException(error.args) from error
-
-        try:
-            self._get_secret()
-            validate(self._config["db"], db_config_schema)
-        except Exception as error:
-            raise SecretInfoGetException(error.args) from error
-
-    def _load_configs(self):
-        """load config classes"""
-        self._log_config = LogConfig(**self._config.get("log", {}))
-        self._db_config = self._config.get("db", {})
-        self._layout_apply_config = self._config.get("layout_apply", {})
+            raise SettingFileLoadException(error.args, "layoutapply_log_config.yaml") from error
 
     def _validate_log_dir(self):
         """validate log dir setting.
@@ -127,7 +43,8 @@ class LayoutApplyConfig(BaseConfig):
         Raises:
             FileNotFoundError: Directory not found.
         """
-        log_dir = self.logger_args.get("log_dir", None)
+        filename = self._config.get("handlers", {}).get("file", {}).get("filename")
+        log_dir = os.path.dirname(filename)
         if log_dir:
             self._check_directory_path(log_dir)
 
@@ -142,6 +59,40 @@ class LayoutApplyConfig(BaseConfig):
         """
         if not os.path.isdir(path):
             raise FileNotFoundError(f"Directory not found at path: {path}")
+
+    @property
+    def log_config(self) -> dict:
+        """Reading log configuration data from an settings file
+
+        Returns:
+            dict: read config date
+        """
+        return self._config
+
+
+class LayoutApplyConfig(BaseConfig):
+    """Class for reading configuration files of the LayoutApply function"""
+
+    def __init__(self) -> None:
+        try:
+            super().__init__("layoutapply.config", "layoutapply_config.yaml")
+            validate(instance=self._config, schema=config_schema)
+            self._load_configs()
+        except Exception as error:
+            raise SettingFileLoadException(error.args, "layoutapply_config.yaml") from error
+
+        try:
+            self._get_secret()
+            validate(self._config["db"], db_config_schema)
+        except Exception as error:
+            raise SecretInfoGetException(error.args) from error
+
+        self._log_config = None
+
+    def _load_configs(self):
+        """load config classes"""
+        self._db_config = self._config.get("db", {})
+        self._layout_apply_config = self._config.get("layout_apply", {})
 
     def _get_secret(self) -> None:
         """get secret information for secret store"""
@@ -178,14 +129,9 @@ class LayoutApplyConfig(BaseConfig):
                 pass
         return secret_info
 
-    @property
-    def logger_args(self) -> dict:
-        """Generate an argument dictionary for logger
-
-        Returns:
-            dict: Settings group of log
-        """
-        return asdict(self._log_config, dict_factory=log_dict_factory)
+    def load_log_configs(self):
+        """load log config classes"""
+        self._log_config = LayoutApplyLogConfig()
 
     @property
     def layout_apply(self) -> dict:
@@ -204,6 +150,15 @@ class LayoutApplyConfig(BaseConfig):
             dict: Settings group of db
         """
         return self._db_config
+
+    @property
+    def log_config(self) -> dict:
+        """Reading log configuration data from an settings file
+
+        Returns:
+            dict: read config date
+        """
+        return self._log_config.log_config if self._log_config else None
 
     @property
     def get_information(self) -> dict:
@@ -227,6 +182,35 @@ class LayoutApplyConfig(BaseConfig):
             _set_specs_polling_count(read_conf, o, specs_conf.get(o).get("polling"))
             _set_specs_polling_interval(read_conf, o, specs_conf.get(o).get("polling"))
         _set_specs_timeout(read_conf, specs_conf)
+
+        return read_conf
+
+    @property
+    def workflow_manager(self) -> dict:
+        """Workflow_manager configuration group getter
+
+        Returns:
+            dict: Settings group of workflow_manager
+        """
+        default_workflow_manager_conf = {
+            "extended-procedure": {
+                "polling": {"count": 60, "interval": 30},
+                "retry": {"default": {"interval": 5, "max_count": 5}},
+            },
+            "timeout": 60,
+        }
+
+        timeout_conf = read_conf = self._config.get("workflow_manager")
+        polling_conf = read_conf.get("extended-procedure").get("polling", {})
+        retry_conf = read_conf.get("extended-procedure").get("retry", {})
+        read_conf["timeout"] = default_workflow_manager_conf["timeout"]
+        read_conf["extended-procedure"] = default_workflow_manager_conf["extended-procedure"]
+        _set_timeout(read_conf, timeout_conf)
+        if polling_conf:
+            _set_polling_count(read_conf["extended-procedure"], polling_conf)
+            _set_polling_interval(read_conf["extended-procedure"], polling_conf)
+        if retry_conf.get("default"):
+            _set_retry_default(read_conf["extended-procedure"], retry_conf)
 
         return read_conf
 
@@ -363,7 +347,7 @@ class LayoutApplyConfig(BaseConfig):
         conf = {
             "retry": {
                 "interval": 2,
-                "max_count": 5,
+                "max_count": 4,
             },
         }
         read_conf = self._config.get("server_connection", {})
@@ -371,8 +355,17 @@ class LayoutApplyConfig(BaseConfig):
         if "retry" in read_conf:
             retry_conf = read_conf["retry"]
             conf["retry"]["interval"] = retry_conf.get("interval", 2)
-            conf["retry"]["max_count"] = retry_conf.get("max_count", 5)
+            conf["retry"]["max_count"] = retry_conf.get("max_count", 4)
         return conf
+
+    @property
+    def message_broker(self) -> dict:
+        """message_broker configuration group getter
+
+        Returns:
+            dict: Settings group of message_broker
+        """
+        return self._config.get("message_broker", {})
 
 
 def _set_specs_polling_count(read_conf: dict, operation: str, polling_conf: dict):
