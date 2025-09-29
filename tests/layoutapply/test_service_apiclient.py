@@ -589,7 +589,7 @@ class TestServiceAPIBase:
         )
 
         def sleeping(request: Request):
-            sleep(timeout_sec + 5)  # タイムアウト値 + 5秒の遅延
+            sleep(timeout_sec + 5)  # Timeout value + 5-second delay
             return Response("", status=200)
 
         httpserver.expect_request(
@@ -1315,7 +1315,7 @@ class TestServiceAPIBase:
         ).respond_with_json(
             {
                 "message": "Request accepted",
-                # レスポンスにextendedProcedureIDが含まれていない
+                # The response does not contain the extendedProcedureID.
             },
             status=202,
         )
@@ -1873,7 +1873,7 @@ class TestServiceAPIBase:
         )
 
         def sleeping(request: Request):
-            sleep(timeout_sec + 5)  # タイムアウト値 + 5秒の遅延
+            sleep(timeout_sec + 5)  # Timeout value + 5-second delay
             return Response("", status=202)
 
         httpserver.expect_request(
@@ -2606,7 +2606,7 @@ class TestServiceAPIBase:
         ).respond_with_json(
             {
                 "message": "Request accepted",
-                # extendedProcedureIDが含まれていない
+                # The response does not contain the extendedProcedureID.
             },
             status=202,
         )

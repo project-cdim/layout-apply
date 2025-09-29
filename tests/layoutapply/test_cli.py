@@ -294,10 +294,10 @@ get_list_assert_target = {
 
 @pytest.fixture
 def get_list_assert_target_no_fields():
-    # 深いコピーを作成して、元のデータを変更しないようにする
+    # Create a deep copy to avoid modifying the original data.
     no_fields_target = copy.deepcopy(get_list_assert_target)
 
-    # IN_PROGRESS のエントリの procedures を削除
+    # Delete the procedures of the IN_PROGRESS entry.
     for result_dict in no_fields_target["applyResults"]:
         if result_dict.get("status") == "IN_PROGRESS" and "procedures" in result_dict:
             del result_dict["procedures"]

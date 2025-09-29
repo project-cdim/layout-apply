@@ -89,7 +89,7 @@ def test_run_failure_when_loading_arguments_failed(mocker, capfd, caplog, get_ap
     proc = procedure.single_pattern[0][0]
     mocker.patch("pickle.loads", side_effect=pickle.PickleError("Parse argument error"))
 
-    apply_id = get_applyID  # fixtureの値をそのまま使う
+    apply_id = get_applyID  # Use the fixture value as it is.
     with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as fp:
         fp.write(pickle.dumps(SubprocOpt(proc, config, apply_id, Action.REQUEST)).hex())
     sys.argv = ["file-name", fp.name]
