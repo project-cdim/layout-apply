@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -86,7 +86,28 @@ class TestDbAccess:
         result = {
             "applyid": "000000001a",
             "status": "COMPLETED",
-            "rollbackstatus": None,
+        }
+        mock_connect = mocker.Mock()
+        mocker.patch("psycopg2.connect", mock_connect)
+
+        mock_cursor = mocker.Mock()
+        mock_connect.return_value.cursor.return_value = mock_cursor
+        mock_cursor.rowcount = 0
+        mock_cursor.fetchone.side_effect = [result, result, result, result]
+        mock_cursor.execute.side_effect = [None, None, None, psycopg2.IntegrityError, None, None, None]
+
+        # psycopg2.extras.DictCursor is mocked
+        mock_dictcursor = mocker.MagicMock()
+        mock_dictcursor.__enter__.return_value = mock_cursor
+        mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
+
+        assert len(get_db_instance.register({})) == 10
+        assert mock_cursor.execute.call_count == 7
+
+    def test_register_multipleinstancerrror_occurred(self, mocker, get_db_instance, docker_services):
+        result = {
+            "applyid": "000000001a",
+            "status": "IN_PROGRESS",
         }
         mock_connect = mocker.Mock()
         mocker.patch("psycopg2.connect", mock_connect)
@@ -95,29 +116,6 @@ class TestDbAccess:
         mock_connect.return_value.cursor.return_value = mock_cursor
         mock_cursor.rowcount = 0
         mock_cursor.fetchone.side_effect = [result, result]
-        mock_cursor.execute.side_effect = [None, None, psycopg2.IntegrityError, None, None]
-
-        # psycopg2.extras.DictCursor is mocked
-        mock_dictcursor = mocker.MagicMock()
-        mock_dictcursor.__enter__.return_value = mock_cursor
-        mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
-
-        assert len(get_db_instance.register({})) == 10
-        assert mock_cursor.execute.call_count == 5
-
-    def test_register_multipleinstancerrror_occurred(self, mocker, get_db_instance, docker_services):
-        result = {
-            "applyid": "000000001a",
-            "status": "IN_PROGRESS",
-            "rollbackstatus": None,
-        }
-        mock_connect = mocker.Mock()
-        mocker.patch("psycopg2.connect", mock_connect)
-
-        mock_cursor = mocker.Mock()
-        mock_connect.return_value.cursor.return_value = mock_cursor
-        mock_cursor.rowcount = 0
-        mock_cursor.fetchone.side_effect = [result]
         mock_cursor.execute.side_effect = [None, [1], None]
 
         with pytest.raises(MultipleInstanceError):
@@ -135,12 +133,7 @@ class TestDbAccess:
             "endedat": datetime.datetime(2023, 10, 2, 0, 0),
             "canceledat": datetime.datetime(2023, 10, 2, 0, 0),
             "executerollback": None,
-            "rollbackstatus": None,
-            "rollbackresult": None,
-            "rollbackstartedat": datetime.datetime(2023, 10, 2, 0, 0),
-            "rollbackendedat": datetime.datetime(2023, 10, 2, 0, 0),
             "resumeprocedures": None,
-            "resumeresult": None,
             "suspendedat": datetime.datetime(2023, 10, 2, 0, 0),
             "resumedat": datetime.datetime(2023, 10, 2, 0, 0),
         }
@@ -150,7 +143,7 @@ class TestDbAccess:
         mock_cursor = mocker.Mock()
         mock_connect.return_value.cursor.return_value = mock_cursor
         mock_cursor.rowcount = 0
-        mock_cursor.fetchone.side_effect = [result]
+        mock_cursor.fetchone.side_effect = [result, result]
         mock_cursor.execute.side_effect = [None, [1], None]
 
         with pytest.raises(SuspendedDataExistException):
@@ -169,9 +162,8 @@ class TestDbAccess:
                     "applyresult": [],
                     "rollbackprocedures": [],
                     "rollback_status": "",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
                 }
             ),
             (
@@ -182,9 +174,20 @@ class TestDbAccess:
                     "applyresult": [],
                     "rollbackprocedures": [],
                     "rollback_status": "COMPLETED",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
+                }
+            ),
+            (
+                {
+                    "applyID": "123456789a",
+                    "status": "",
+                    "procedures": None,
+                    "applyresult": [],
+                    "rollbackprocedures": [],
+                    "rollback_status": "",
+                    "rollback_result": [],
+                    "resumeprocedures": [],
                 }
             ),
         ],
@@ -223,9 +226,8 @@ class TestDbAccess:
                         {"test": "test"},
                     ],
                     "rollback_status": "",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
                 }
             ),
         ],
@@ -258,9 +260,8 @@ class TestDbAccess:
                     ],
                     "rollbackprocedures": [],
                     "rollback_status": "",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
                 }
             ),
         ],
@@ -294,9 +295,8 @@ class TestDbAccess:
                     ],
                     "rollbackprocedures": [],
                     "rollback_status": "",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
                 }
             ),
         ],
@@ -322,16 +322,11 @@ class TestDbAccess:
                     "applyID": "300000001a",
                     "status": "COMPLETED",
                     "procedures": None,
-                    "applyresult": [],
+                    "applyresult": [{"test": "test"}, {"test": "test"}],
                     "rollbackprocedures": [],
                     "rollback_status": "",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [
-                        {"test": "test"},
-                        {"test": "test"},
-                        {"test": "test"},
-                    ],
                 }
             ),
         ],
@@ -348,6 +343,11 @@ class TestDbAccess:
 
         get_db_instance.update(UpdateOption(**args))
         assert mock_con.call_count == 1
+        # check for delete resumeresult column(ite.22 prototype)
+        cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
+        init_db_instance.commit()
+        row = cursor.fetchone()
+        assert row.get("resumeresult") is None
 
     def test_update_failure_when_query_failure_occurred(self, mocker, get_db_instance):
         mock_cursor = mocker.MagicMock()
@@ -365,7 +365,7 @@ class TestDbAccess:
         mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
 
         with pytest.raises(psycopg2.ProgrammingError):
-            get_db_instance.update(UpdateOption(None, None, None, None, None, None, None, None, None))
+            get_db_instance.update(UpdateOption(None, None, None, None, None, None, None, None))
             assert mock_cursor.fetchone.call_count == 2
 
     def test_update_failure_when_nonexistent_id(self, mocker, get_db_instance, init_db_instance):
@@ -373,7 +373,7 @@ class TestDbAccess:
         mocker.patch.object(DbAccess, "close", return_value=None)
 
         with pytest.raises(IdNotFoundException):
-            get_db_instance.update(UpdateOption("NoExitsId", None, None, None, None, None, None, None, None))
+            get_db_instance.update(UpdateOption("NoExitsId", None, None, None, None, None, None, None))
 
             applystatus = get_db_instance.get_apply_status(None)
             assert applystatus == {}
@@ -397,8 +397,8 @@ class TestDbAccess:
         assert applystatus["applyID"] == applyid
         assert applystatus["status"] == "CANCELED"
         assert applystatus["procedures"] == {"procedures": "pre_test"}
-        assert applystatus["applyResult"] == [{"test": "test"}, {"test": "test"}]
-        assert applystatus["rollbackProcedures"] == {"test": "test"}
+        assert applystatus["result"] == [{"test": "test"}, {"test": "test"}]
+        assert applystatus["rollbackProcedures"] == {"procedures": "test"}
         assert applystatus["startedAt"] == "2023-10-02T00:00:02Z"
         assert applystatus["endedAt"] == "2023-10-02T12:24:01Z"
         assert applystatus["canceledAt"] == "2023-10-02T12:00:00Z"
@@ -422,16 +422,12 @@ class TestDbAccess:
         assert applystatus["applyID"] == applyid
         assert applystatus["status"] == "CANCELED"
         assert applystatus["procedures"] == {"procedures": "pre_test"}
-        assert applystatus["applyResult"] == [{"test": "test"}, {"test": "test"}]
-        assert applystatus["rollbackProcedures"] == {"test": "test"}
+        assert applystatus["result"] == [{"test": "test"}, {"test": "test"}]
+        assert applystatus["rollbackProcedures"] == {"procedures": "test"}
         assert applystatus["startedAt"] == "2023-10-03T00:00:00Z"
         assert applystatus["endedAt"] == "2023-10-04T12:23:59Z"
         assert applystatus["canceledAt"] == "2023-10-03T12:00:00Z"
         assert applystatus["executeRollback"] is True
-        assert applystatus["rollbackResult"] == [{"test": "test"}, {"test": "test"}]
-        assert applystatus["rollbackStatus"] == "COMPLETED"
-        assert applystatus["rollbackStartedAt"] == "2023-10-03T12:20:00Z"
-        assert applystatus["rollbackEndedAt"] == "2023-10-04T12:23:59Z"
         assert "resumeResult" not in applystatus
 
     def test_get_applystatus_success_when_status_completed(self, mocker, get_db_instance, init_db_instance):
@@ -447,7 +443,7 @@ class TestDbAccess:
         assert applystatus["applyID"] == applyid
         assert applystatus["status"] == "COMPLETED"
         assert applystatus["procedures"] == {"procedures": "pre_test"}
-        assert applystatus["applyResult"] == [{"test": "test"}, {"test": "test"}]
+        assert applystatus["result"] == [{"test": "test"}, {"test": "test"}]
         assert applystatus["startedAt"] == "2023-10-02T00:00:00Z"
         assert applystatus["endedAt"] == "2023-10-02T12:23:59Z"
         assert "rollbackProcedures" not in applystatus
@@ -470,7 +466,7 @@ class TestDbAccess:
         assert applystatus["applyID"] == applyid
         assert applystatus["status"] == "IN_PROGRESS"
         assert applystatus["procedures"] == {"procedures": "pre_test"}
-        assert "applyResult" not in applystatus
+        # assert "result" not in applystatus
         assert "rollbackProcedures" not in applystatus
         assert applystatus["startedAt"] == "2023-10-02T00:00:00Z"
         assert "endedAt" not in applystatus
@@ -496,8 +492,8 @@ class TestDbAccess:
         assert applystatus["applyID"] == applyid
         assert applystatus["status"] == "CANCELING"
         assert applystatus["procedures"] == {"procedures": "pre_test"}
-        assert applystatus["applyResult"] == [{"test": "test"}, {"test": "test"}]
-        assert applystatus["rollbackProcedures"] == {"test": "test"}
+        assert applystatus["result"] == [{"test": "test"}, {"test": "test"}]
+        assert applystatus["rollbackProcedures"] == {"procedures": "test"}
         assert applystatus["startedAt"] == "2023-10-01T23:59:59Z"
         assert applystatus["endedAt"] == "2023-10-02T12:23:58Z"
         assert applystatus["canceledAt"] == "2023-10-02T12:00:00Z"
@@ -521,16 +517,13 @@ class TestDbAccess:
         assert applystatus["applyID"] == applyid
         assert applystatus["status"] == "COMPLETED"
         assert applystatus["procedures"] == {"procedures": "pre_test"}
-        assert applystatus["applyResult"] == [{"test": "test"}, {"test": "test"}]
+        assert applystatus["result"] == [{"test": "test"}, {"test": "test"}]
         assert "rollbackProcedures" not in applystatus
         assert applystatus["startedAt"] == "2023-10-02T00:00:00Z"
         assert applystatus["endedAt"] == "2023-10-02T12:23:59Z"
         assert "canceledAt" not in applystatus
         assert "executeRollback" not in applystatus
-        assert "rollbackResult" not in applystatus
-        assert "rollbackStatus" not in applystatus
-        assert applystatus["resumeProcedures"] == {"test": "pre_test"}
-        assert applystatus["resumeResult"] == [{"test": "test"}, {"test": "test"}]
+        assert applystatus["resumeProcedures"] == {"procedures": "pre_test"}
         assert applystatus["suspendedAt"] == "2023-10-02T12:23:59Z"
         assert applystatus["resumedAt"] == "2023-10-03T12:23:59Z"
 
@@ -568,7 +561,7 @@ class TestDbAccess:
         mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
 
         with pytest.raises(psycopg2.ProgrammingError):
-            get_db_instance.update(UpdateOption(None, None, None, None, None, None, None, None, None))
+            get_db_instance.update(UpdateOption(None, None, None, None, None, None, None, None))
             assert mock_cursor.execute.call_count == 2
 
     def test_requst_cancel_failure_when_no_update_target_on_cancel(self, mocker, get_db_instance, init_db_instance):
@@ -639,7 +632,7 @@ class TestDbAccess:
             ),
         ],
     )
-    def test_update_rollback_status_success(self, mocker, args, get_db_instance, init_db_instance):
+    def test_register_rollback_status_success(self, mocker, args, get_db_instance, init_db_instance):
         # Data adjustment before testing.
         cursor = init_db_instance.cursor(cursor_factory=DictCursor)
         applyid = create_randomname(IdParameter.LENGTH)
@@ -649,10 +642,10 @@ class TestDbAccess:
         mocker.patch.object(DbAccess, "close", return_value=None)
         args["applyID"] = applyid
 
-        get_db_instance.update_rollback_status(**args)
+        get_db_instance.register_rollback_status(**args)
         assert mock_con.call_count == 1
 
-    def test_update_rollback_status_failure_when_query_failure_occurred(self, mocker, get_db_instance):
+    def test_register_rollback_status_failure_when_query_failure_occurred(self, mocker, get_db_instance):
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = [None, psycopg2.ProgrammingError]
         # Create a connection object for testing.
@@ -668,15 +661,15 @@ class TestDbAccess:
         mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
 
         with pytest.raises(psycopg2.ProgrammingError):
-            get_db_instance.update_rollback_status(None, None, None)
+            get_db_instance.register_rollback_status(None, None, None)
             assert mock_cursor.fetchone.call_count == 2
 
-    def test_update_rollback_status_failure_when_nonexistent_id(self, mocker, get_db_instance, init_db_instance):
+    def test_register_rollback_status_failure_when_nonexistent_id(self, mocker, get_db_instance, init_db_instance):
         mock_cursor = mocker.patch("psycopg2.connect", return_value=init_db_instance)
         mocker.patch.object(DbAccess, "close", return_value=None)
 
         with pytest.raises(IdNotFoundException):
-            get_db_instance.update_rollback_status("NoExitsId", None, None)
+            get_db_instance.register_rollback_status("NoExitsId", None, None)
             applystatus = get_db_instance.get_apply_status(None)
             assert applystatus == {}
             assert mock_cursor.execute.call_count == 1
@@ -822,9 +815,6 @@ class TestDbAccess:
                     "endedAt": "2023-10-04T12:23:59Z",
                     "canceledAt": "2023-10-03T12:00:00Z",
                     "executeRollback": True,
-                    "rollbackStatus": "COMPLETED",
-                    "rollbackStartedAt": "2023-10-03T12:20:00Z",
-                    "rollbackEndedAt": "2023-10-04T12:23:59Z",
                 },
             ],
         }
@@ -903,9 +893,6 @@ class TestDbAccess:
                     "endedAt": "2023-10-04T12:23:59Z",
                     "canceledAt": "2023-10-03T12:00:00Z",
                     "executeRollback": True,
-                    "rollbackStatus": "COMPLETED",
-                    "rollbackStartedAt": "2023-10-03T12:20:00Z",
-                    "rollbackEndedAt": "2023-10-04T12:23:59Z",
                 },
             ],
         }
@@ -988,6 +975,14 @@ class TestDbAccess:
             get_db_instance._request_resume("NoExitsId", {"status": "SUSPENDED"})
             assert mock_cursor.execute.call_count == 1
 
+    def test_request_resume_failure_when_nonexistent_id_in_r_status(self, mocker, get_db_instance, init_db_instance):
+        mock_cursor = mocker.patch("psycopg2.connect", return_value=init_db_instance)
+        mocker.patch.object(DbAccess, "close", return_value=None)
+        get_db_instance._open_db_connection()
+        with pytest.raises(IdNotFoundException):
+            get_db_instance._request_resume("NoExitsId", {"rollback": {"status": "SUSPENDED"}})
+            assert mock_cursor.execute.call_count == 1
+
     def test_proc_result_status_and_resumedate_updated(self, mocker, get_db_instance, init_db_instance):
         # arrange
         cursor = init_db_instance.cursor(cursor_factory=DictCursor)
@@ -1032,7 +1027,7 @@ class TestDbAccess:
         err_func = psycopg2.errors.SerializationFailure
         err_func.pgcode = "40001"
         mock_cursor = mocker.MagicMock()
-        err = [None, err_func, None, None]
+        err = [None, None, err_func, None, None, None]
         mock_cursor.execute.side_effect = err
 
         mock_connection = mocker.MagicMock()
@@ -1060,9 +1055,8 @@ class TestDbAccess:
                     "applyresult": [],
                     "rollbackprocedures": [],
                     "rollback_status": "",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
                 }
             ),
             (
@@ -1073,9 +1067,8 @@ class TestDbAccess:
                     "applyresult": [],
                     "rollbackprocedures": [],
                     "rollback_status": "COMPLETED",
-                    "rollback_result": {},
+                    "rollback_result": [],
                     "resumeprocedures": [],
-                    "resume_result": [],
                 }
             ),
         ],
@@ -1112,7 +1105,7 @@ class TestDbAccess:
             ),
         ],
     )
-    def test_update_rollback_status_check_if_a_SerializationFailure_occurs(
+    def test_register_rollback_status_check_if_a_SerializationFailure_occurs(
         self, mocker, args, docker_services, get_db_instance
     ):
         err_func = psycopg2.errors.SerializationFailure
@@ -1131,7 +1124,7 @@ class TestDbAccess:
         mock_dictcursor.__enter__.return_value = mock_cursor
         mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
 
-        get_db_instance.update_rollback_status(**args)
+        get_db_instance.register_rollback_status(**args)
         assert mock_conn.call_count == 1
 
     @pytest.mark.parametrize(
@@ -1164,7 +1157,7 @@ class TestDbAccess:
         mock_dictcursor = mocker.MagicMock()
         mock_dictcursor.__enter__.return_value = mock_cursor
         mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
-        get_db_instance.update_rollback_status(**args)
+        get_db_instance.register_rollback_status(**args)
         assert mock_conn.call_count == 1
 
     def test_get_apply_status_list_check_if_a_SerializationFailure_occurs(
@@ -1217,7 +1210,7 @@ class TestDbAccess:
         err_func.pgcode = "40001"
         mock_cursor = mocker.MagicMock()
         mock_cursor.rowcount = 1
-        err = [None, err_func, None]
+        err = [None, None, err_func, None, None, None]
         mock_cursor.execute.side_effect = err
 
         mock_connection = mocker.MagicMock()
@@ -1243,12 +1236,7 @@ class TestDbAccess:
             "endedat": datetime.datetime(2023, 10, 2, 0, 0),
             "canceledat": datetime.datetime(2023, 10, 2, 0, 0),
             "executerollback": None,
-            "rollbackstatus": None,
-            "rollbackresult": None,
-            "rollbackstartedat": datetime.datetime(2023, 10, 2, 0, 0),
-            "rollbackendedat": datetime.datetime(2023, 10, 2, 0, 0),
             "resumeprocedures": None,
-            "resumeresult": None,
             "suspendedat": datetime.datetime(2023, 10, 2, 0, 0),
             "resumedat": datetime.datetime(2023, 10, 2, 0, 0),
         }
@@ -1256,8 +1244,8 @@ class TestDbAccess:
         err_func.pgcode = "40001"
         mock_cursor = mocker.MagicMock()
         mock_cursor.rowcount = 1
-        mock_cursor.fetchone.side_effect = [result]
-        err = [None, err_func, None, None]
+        mock_cursor.fetchone.side_effect = [result, result, None]
+        err = [None, None, err_func, None, None, None]
         mock_cursor.execute.side_effect = err
 
         mock_connection = mocker.MagicMock()
@@ -1300,7 +1288,6 @@ class TestDbAccess:
             (
                 {
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": False,
                     "request_flg": True,
                 }
@@ -1308,7 +1295,6 @@ class TestDbAccess:
             (
                 {
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": True,
                     "request_flg": False,
                 }
@@ -1316,7 +1302,6 @@ class TestDbAccess:
             (
                 {
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": False,
                     "request_flg": True,
                 }
@@ -1324,7 +1309,6 @@ class TestDbAccess:
             (
                 {
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": True,
                     "request_flg": False,
                 }
@@ -1332,7 +1316,6 @@ class TestDbAccess:
             (
                 {
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": False,
                     "request_flg": False,
                 }
@@ -1340,7 +1323,6 @@ class TestDbAccess:
             (
                 {
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": False,
                     "request_flg": False,
                 }
@@ -1352,6 +1334,7 @@ class TestDbAccess:
         cursor = init_db_instance.cursor(cursor_factory=DictCursor)
         applyid = create_randomname(IdParameter.LENGTH)
         cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
+        cursor.execute(query=sql.get_list_insert_sql_r_1, vars=[applyid])
         init_db_instance.commit()
         mock_con = mocker.patch("psycopg2.connect", return_value=init_db_instance)
         mocker.patch.object(DbAccess, "close", return_value=None)
@@ -1359,19 +1342,20 @@ class TestDbAccess:
 
         get_db_instance.update_result(**args)
         cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
-        init_db_instance.commit()
         row = cursor.fetchone()
+        cursor.execute(query=f"SELECT * FROM rollbackstatus WHERE applyid = '{applyid}'")
+        r_row = cursor.fetchone()
+        init_db_instance.commit()
         assert mock_con.call_count == 1
-        if args["resume_flg"] and args["request_flg"]:
-            assert row.get("resumeresult") == args["result"]
-        elif args["rollback_flg"]:
-            assert row.get("rollbackresult") == args["result"]
+        # check for delete resumeresult column(ite.22 prototype)
+        assert row.get("resumeresult") is None
+        if args["rollback_flg"]:
+            assert r_row.get("result") == args["result"]
         elif args["request_flg"]:
-            assert row.get("applyresult") == args["result"]
+            assert row.get("result") == args["result"]
         else:
-            assert row.get("resumeresult") is None
-            assert row.get("rollbackresult") is None
-            assert row.get("applyresult") is None
+            assert r_row.get("result") is None
+            assert row.get("result") is None
 
     @pytest.mark.parametrize(
         "args",
@@ -1380,7 +1364,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": False,
                     "request_flg": True,
                 }
@@ -1389,7 +1372,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": True,
                     "request_flg": False,
                 }
@@ -1398,7 +1380,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": False,
                     "request_flg": True,
                 }
@@ -1407,7 +1388,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": True,
                     "request_flg": False,
                 }
@@ -1430,7 +1410,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": False,
                     "request_flg": True,
                 }
@@ -1439,7 +1418,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": False,
                     "rollback_flg": True,
                     "request_flg": False,
                 }
@@ -1448,7 +1426,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": False,
                     "request_flg": True,
                 }
@@ -1457,7 +1434,6 @@ class TestDbAccess:
                 {
                     "applyID": "0123456789abcdef",
                     "result": [{"test": "test"}],
-                    "resume_flg": True,
                     "rollback_flg": True,
                     "request_flg": False,
                 }

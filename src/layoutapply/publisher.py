@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -12,6 +12,7 @@
 # License for the specific language governing permissions and limitations
 #  under the License.
 """message publisher for layoutapply"""
+
 from http import HTTPStatus
 
 import requests
@@ -43,7 +44,7 @@ class MessagePublisheClient:
             response = requests.post(self.uri, timeout=100, headers={"Content-Type": "application/json"})
             if response.status_code != HTTPStatus.NO_CONTENT.value:
                 raise MessagePublishException(response=response)
-            self.logger.info(f"Published message to topic '{self.uri}")
+            self.logger.info(f"Published message to topic '{self.uri}'")
         except Exception as e:  # pylint: disable=broad-except
             exc = MessagePublishException(exc=e)
             self.logger.warning(exc.message)

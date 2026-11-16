@@ -26,7 +26,7 @@ services:
     depends_on:
       - message-broker
     command: >
-      nats stream add layout_apply_apply --subjects=layout_apply_apply.completed --server=nats://message-broker:4222 --storage=file --retention=limits --max-msgs=-1 --max-bytes=-1 --max-age=0s --dupe-window=2m --defaults
+      nats stream add layout_apply_apply --subjects=layout_apply.apply.completed --server=nats://message-broker:4222 --storage=file --retention=limits --max-msgs=-1 --max-bytes=-1 --max-age=0s --dupe-window=2m --defaults
 
   dapr:
     image: daprio/daprd:edge

@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -17,17 +17,16 @@ import json
 import sys
 from http import HTTPStatus
 from multiprocessing import Process
-from typing import List, Optional, Tuple
+from typing import Annotated, List, Tuple
 from zoneinfo import ZoneInfo
 
 import iso8601
 import psycopg2
 import uvicorn
-from fastapi import Depends, FastAPI, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from jsonschema import ValidationError, validate
-from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.cors import CORSMiddleware
 
 from layoutapply.common.logger import Logger
@@ -51,23 +50,21 @@ from layoutapply.custom_exceptions import (
 from layoutapply.db import DbAccess, GetAllOption
 from layoutapply.main import run
 from layoutapply.migration_apiclient import ConfigManagerAPI, GetAvailableResourcesAPI, MigrationAPI
+from layoutapply.model import DesiredLayout, GetAllLayoutApplyOptions, ProcedureList
 from layoutapply.schema import action as action_scheme
 from layoutapply.schema import apply_id as apply_id_scheme
-from layoutapply.schema import desiredLayout as desiredLayout_schema
 from layoutapply.schema import fields as fields_schema
 from layoutapply.schema import limit as limit_schema
 from layoutapply.schema import offset as offset_schema
 from layoutapply.schema import orderBy as orderBy_schema
-from layoutapply.schema import procedure as procedure_schema
 from layoutapply.schema import sortBy as sortBy_schema
 from layoutapply.schema import status as status_schema
-from layoutapply.schema import targetNodeID as targetNodeID_schema
 from layoutapply.schema import time_format as time_format_schema
 from layoutapply.setting import LayoutApplyConfig
 from layoutapply.util import create_applystatus_response, set_date_dict
 
 app = FastAPI()
-BASEURL = "/cdim/api/v1/"
+router = APIRouter(prefix="/cdim/api/v1")
 DATABASE = None
 JSON_RESPONSE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -82,74 +79,6 @@ app.add_middleware(
     allow_methods=["*"],  # Settings to allow request methods for CORS requests
     allow_headers=["*"],  # Settings to allow headers in CORS requests
 )
-
-
-class ProcedureList(BaseModel):
-    """Model class for the migration procedure list"""
-
-    procedures: list
-
-    @field_validator("procedures")
-    def validate_procedure(cls, procedures):  # pylint: disable=E0213
-        """Validation check of migration procedure
-
-        Args:
-            procedure (dict): migration procedure
-
-        Returns:
-            dict: migration procedure
-        """
-        validate({"procedures": procedures}, procedure_schema)
-        return procedures
-
-
-class DesiredLayout(BaseModel):
-    """Model class for the desiredLayout"""
-
-    targetNodeIDs: Optional[list] = Field(None)
-    desiredLayout: dict
-
-    @field_validator("desiredLayout")
-    def validate_desiredLayout(cls, desiredLayout):  # noqa: E501 pylint: disable=C0103,E0213
-        """Validation check of desiredLayout
-
-        Args:
-            desiredLayout (dict): desiredLayout
-
-        Returns:
-            dict: desiredLayout
-        """
-        validate(desiredLayout, desiredLayout_schema)
-        return desiredLayout
-
-    @field_validator("targetNodeIDs")
-    def validate_targetNodeID(cls, targetNodeIDs):  # noqa: E501 pylint: disable=C0103,E0213
-        """Validation check of targetNodeIDs
-
-        Args:
-            targetNodeIDs (list): targetNodeIDs
-
-        Returns:
-            list: targetNodeIDs
-        """
-        validate(targetNodeIDs, targetNodeID_schema)
-        return targetNodeIDs
-
-
-class GetAllLayoutApplyOptions(BaseModel):
-    """Data model to store options for the list retrieval function"""
-
-    model_config = {"extra": "forbid"}
-
-    status: Optional[str] = None
-    startedAtSince: Optional[str] = None
-    startedAtUntil: Optional[str] = None
-    endedAtSince: Optional[str] = None
-    endedAtUntil: Optional[str] = None
-    sortBy: Optional[str] = "startedAt"
-    orderBy: Optional[str] = "desc"
-    limit: Optional[int] = 20
-    offset: Optional[int] = 0
 
 
 def _initialize() -> Tuple[LayoutApplyConfig, Logger]:
@@ -179,7 +108,7 @@ def _get_db_connection(logger: Logger):
     return DbAccess(logger)
 
 
-@app.post(BASEURL + "layout-apply", response_class=JSONResponse)
+@router.post("/layout-apply", response_class=JSONResponse)
 def execute_layoutapply(procedure: ProcedureList):
     """execute layoutapply(API)
     Args:
@@ -204,7 +133,7 @@ def execute_layoutapply(procedure: ProcedureList):
     if proc_len != 0:
         # Execute a subprocess asynchronously
         response_code, return_data, proc_id = _exec_subprocess(logger, proc, config, applyID, Action.REQUEST)
-        database.update_subprocess(proc_id, applyID)
+        database.update_subprocess(proc_id, applyID, Action.REQUEST)
         if response_code is not None:
             return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
 
@@ -216,7 +145,7 @@ def execute_layoutapply(procedure: ProcedureList):
     return return_value
 
 
-@app.put(BASEURL + "layout-apply/{ApplyID}", response_class=JSONResponse)
+@router.put("/layout-apply/{ApplyID}", response_class=JSONResponse)
 def action_layoutapply(ApplyID: str, action: str, rollbackOnCancel: bool = False):  # noqa: E501 pylint: disable=C0103
     """action cancel or resume layoutapply(API)
     Args:
@@ -335,7 +264,7 @@ def _create_cancel_layoutapply_response(pre_status: str, status: str, pre_r_stat
     return response_code, return_data, is_already_execute
 
 
-@app.get(BASEURL + "layout-apply/{applyID}", response_class=JSONResponse)
+@router.get("/layout-apply/{applyID}", response_class=JSONResponse)
 def get_applystatus(applyID):  # pylint: disable=C0103
     """layoutapply get(API)
     Args:
@@ -369,10 +298,10 @@ def get_applystatus(applyID):  # pylint: disable=C0103
     )
 
 
-@app.get(BASEURL + "layout-apply", response_class=JSONResponse)
+@router.get("/layout-apply", response_class=JSONResponse)
 def get_applystatus_list(
-    options: GetAllLayoutApplyOptions = Depends(GetAllLayoutApplyOptions),
-    fields: List[str] = Query(None),
+    options: Annotated[GetAllLayoutApplyOptions, Depends(GetAllLayoutApplyOptions)],
+    fields: Annotated[List[str], Query()] = None,
 ):
     """layoutapply get list(API)
     Args:
@@ -436,7 +365,27 @@ def _validate_option_for_get_api(
     Returns:
         return_data: if raised error, include error contents.
     """
-    return_data = {}
+    try:
+        # Validate provided options if they are not None
+        for arg, schema in _build_get_validation_pairs(applyID, fields, options):
+            if arg is not None:
+                validate(arg, schema=schema)
+        _normalize_get_date_dict(date_dict)
+    except ValidationError as err:
+        error_message = err.message.split("\n")[-1]
+        return {"code": "E40001", "message": error_message}
+    except iso8601.ParseError as err:
+        return {"code": "E40001", "message": str(err)}
+
+    return {}
+
+
+def _build_get_validation_pairs(
+    applyID: str,  # pylint: disable=C0103
+    fields: str,
+    options: GetAllLayoutApplyOptions,
+) -> list:
+    """Build option list and schema pairs for get API validation."""
     validation_pairs = [(applyID, apply_id_scheme), (fields, fields_schema)]
     if options is not None:
         validation_pairs.extend(
@@ -448,26 +397,21 @@ def _validate_option_for_get_api(
                 (options.status, status_schema),
             ]
         )
-    try:
-        # Validate provided options if they are not None
-        for arg, schema in validation_pairs:
-            if arg is not None:
-                validate(arg, schema=schema)
-        if date_dict is not None:
-            for key, value in date_dict.items():
-                validate(value, schema=time_format_schema)
-                date_val = iso8601.parse_date(value)
-                date_dict[key] = str(date_val.astimezone(ZoneInfo("UTC")))
-    except ValidationError as err:
-        error_message = err.message.split("\n")[-1]
-        return_data = {"code": "E40001", "message": error_message}
-    except iso8601.ParseError as err:
-        return_data = {"code": "E40001", "message": str(err)}
-
-    return return_data
+    return validation_pairs
 
 
-@app.delete(BASEURL + "layout-apply/{ApplyID}", response_class=JSONResponse)
+def _normalize_get_date_dict(date_dict: dict) -> None:
+    """Normalize date options to UTC string format for database queries."""
+    if date_dict is None:
+        return
+
+    for key, value in date_dict.items():
+        validate(value, schema=time_format_schema)
+        date_val = iso8601.parse_date(value)
+        date_dict[key] = str(date_val.astimezone(ZoneInfo("UTC")))
+
+
+@router.delete("/layout-apply/{ApplyID}", response_class=JSONResponse)
 def delete_layoutapply(ApplyID: str):  # pylint: disable=C0103
     """delete layoutapply data(API)
     Args:
@@ -490,7 +434,9 @@ def delete_layoutapply(ApplyID: str):  # pylint: disable=C0103
         Result.IN_PROGRESS,
         Result.CANCELING,
         Result.SUSPENDED,
-    ] or result_status.get("rollbackStatus") in [
+    ] or result_status.get(
+        "rollback", {}
+    ).get("status", None) in [
         Result.IN_PROGRESS,
         Result.SUSPENDED,
     ]:
@@ -504,7 +450,7 @@ def delete_layoutapply(ApplyID: str):  # pylint: disable=C0103
     return Response(status_code=HTTPStatus.NO_CONTENT.value)
 
 
-@app.post(BASEURL + "migration-procedures", response_class=JSONResponse)
+@router.post("/migration-procedures", response_class=JSONResponse)
 def execute_migration(desiredLayout: DesiredLayout):  # pylint: disable=C0103
     """execute generate migration procedure(API)
     Args:
@@ -769,24 +715,24 @@ def _resume_layoutapply(applyID: str, config: LayoutApplyConfig, logger: Logger)
     logger.info(f"Start resume api. args.applyID:{applyID}")
     database = _get_db_connection(logger)
     proc_result = database.proc_resume(applyID)
-    status, rollback_status = proc_result.get("status"), proc_result.get("rollbackStatus")
+    status, rollback_status = proc_result.get("status"), proc_result.get("rollback", {}).get("status")
     # Adjustment of response content according to the resumption execution results
     if status == Result.SUSPENDED:
         input_procedure = {"procedures": proc_result.get("resumeProcedures")}
         response_code, return_data, proc_id = _exec_subprocess(logger, input_procedure, config, applyID, Action.RESUME)
         if response_code is not None:
             return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
-        database.update_subprocess(proc_id, applyID)
+        database.update_subprocess(proc_id, applyID, Action.RESUME)
         return_data = {"status": Result.IN_PROGRESS}
         response_code = HTTPStatus.ACCEPTED.value
     elif rollback_status == Result.SUSPENDED:
-        input_procedure = {"procedures": proc_result.get("resumeProcedures")}
+        input_procedure = {"procedures": proc_result.get("rollback").get("resumeProcedures")}
         response_code, return_data, proc_id = _exec_subprocess(
             logger, input_procedure, config, applyID, Action.ROLLBACK_RESUME
         )
         if response_code is not None:
             return JSONResponse(status_code=response_code, content=return_data, headers=JSON_RESPONSE_HEADERS)
-        database.update_subprocess(proc_id, applyID)
+        database.update_subprocess(proc_id, applyID, Action.ROLLBACK_RESUME)
         return_data = {"status": status, "rollbackStatus": Result.IN_PROGRESS}
         response_code = HTTPStatus.ACCEPTED.value
     else:
@@ -859,6 +805,9 @@ def _exec_subprocess(
         return_data = {"code": "E40026", "message": exc.message}
         logger.error(f"[E40026]{exc.message}")
     return response_code, return_data, proc.pid
+
+
+app.include_router(router)
 
 
 @app.exception_handler(RequestValidationError)

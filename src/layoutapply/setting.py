@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -141,6 +141,16 @@ class LayoutApplyConfig(BaseConfig):
             dict: Settings group of layout_apply
         """
         return self._layout_apply_config
+
+    @property
+    def db_update_timing(self) -> dict:
+        """DB intermediate update timing settings.
+
+        Returns:
+            dict: time/count second settings for DB updates.
+        """
+        timing_conf = self.layout_apply.get("db_update_timing", {})
+        return {"time": timing_conf.get("time", 3), "count": timing_conf.get("count", 10)}
 
     @property
     def db_config(self) -> dict:

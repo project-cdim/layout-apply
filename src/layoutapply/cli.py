@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -137,7 +137,7 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
             help="""
                 specify the items to be included in the return information.
                 If not specified, that items are not included.
-                set [procedures | applyResult | rollbackProcedures | rollbackResult | resumeProcedures | resumeResult]
+                set [procedures | result | rollbackProcedures | resumeProcedures]
             """,
         )
         get_command.add_argument(
@@ -312,7 +312,7 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
             proc_id = self._exec_subprocess(logger, procedure, config, applyID, Action.REQUEST)
 
             # Register subprocess information in the DB
-            self._update_subporcess_info(database, proc_id, applyID)
+            self._update_subporcess_info(database, proc_id, applyID, Action.REQUEST)
 
         print("Request was successful. Start applying.", file=sys.stderr)
 
@@ -578,7 +578,7 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
                 Result.IN_PROGRESS,
                 Result.CANCELING,
                 Result.SUSPENDED,
-            ] or result_status.get("rollbackStatus") in [
+            ] or result_status.get("rollback", {}).get("status") in [
                 Result.IN_PROGRESS,
                 Result.SUSPENDED,
             ]:
@@ -660,18 +660,18 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
         Returns:
             exit_code (int): exit code
         """
-        status, rollback_status = proc_result.get("status"), proc_result.get("rollbackStatus")
+        status, rollback_status = proc_result.get("status"), proc_result.get("rollback", {}).get("status", None)
         exit_code = ExitCode.NORMAL  # Default
         if status == Result.SUSPENDED:
             input_procedure = {"procedures": proc_result.get("resumeProcedures")}
             proc_id = self._exec_subprocess(logger, input_procedure, config, applyID, Action.RESUME)
-            self._update_subporcess_info(database, proc_id, applyID)
+            self._update_subporcess_info(database, proc_id, applyID, Action.RESUME)
             print("Success.")
             print(f"status={Result.IN_PROGRESS}")
         elif rollback_status == Result.SUSPENDED:
-            input_procedure = {"procedures": proc_result.get("resumeProcedures")}
+            input_procedure = {"procedures": proc_result.get("rollback").get("resumeProcedures")}
             proc_id = self._exec_subprocess(logger, input_procedure, config, applyID, Action.ROLLBACK_RESUME)
-            self._update_subporcess_info(database, proc_id, applyID)
+            self._update_subporcess_info(database, proc_id, applyID, Action.ROLLBACK_RESUME)
             print("Success.")
             print(f"status={status}")
             print(f"rollbackStatus={Result.IN_PROGRESS}")
@@ -695,16 +695,17 @@ class LayoutApplyCommandLine(AbstractBaseCommandLine):
 
         return exit_code
 
-    def _update_subporcess_info(self, database: DbAccess, pid: str, apply_id: str):
+    def _update_subporcess_info(self, database: DbAccess, pid: str, apply_id: str, action: str) -> None:
         """update subporcess info to db.
 
         Args:
             database (DbAccess): DbAccess object
             pid (str): subprocess id
             apply_id (str): apply id
+            action (str): action type
         """
         try:
-            database.update_subprocess(pid, apply_id)
+            database.update_subprocess(pid, apply_id, action)
         except psycopg2.OperationalError as err:
             exc = OperationalError(err)
             print(f"[E40018]{exc.message}", file=sys.stderr)

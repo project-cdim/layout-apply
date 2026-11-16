@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -230,6 +230,24 @@ config = {
                             "type": ["integer", "null"],
                             "minimum": 1,
                             "maximum": 128,
+                        },
+                    },
+                },
+                # DB intermediate update timing settings
+                "db_update_timing": {
+                    "type": "object",
+                    "properties": {
+                        # Intermediate update interval (unit: s)
+                        "time": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 60,
+                        },
+                        # Number of completed requests required for DB update
+                        "count": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
                         },
                     },
                 },
@@ -671,15 +689,14 @@ fields = {
         "type": "string",
         "enum": [
             "procedures",
-            "applyResult",
+            "result",
             "rollbackProcedures",
-            "rollbackResult",
             "resumeProcedures",
-            "resumeResult",
         ],
     },
     "minItems": 1,
 }
+
 
 # Time format for start and end time search parameters
 # Reference[https://qiita.com/Astro1123/items/58bbb47a66347b52f4c8#%E6%97%A5%E4%BB%98]
@@ -690,7 +707,7 @@ time_format = {
 }
 
 # Sort items
-sortBy = {
+sortBy = {  # pylint: disable=C0103
     "type": "string",
     "enum": [
         "startedAt",
@@ -699,7 +716,7 @@ sortBy = {
 }
 
 # Sort order: "asc/desc". If unspecified, it defaults to ascending.
-orderBy = {
+orderBy = {  # pylint: disable=C0103
     "type": "string",
     "enum": [
         "asc",
@@ -720,7 +737,7 @@ offset = {
 }
 
 # desiredLayout
-desiredLayout = {
+desiredLayout = {  # pylint: disable=C0103
     "type": "object",
     "required": ["nodes"],
     "properties": {
@@ -763,7 +780,7 @@ desiredLayout = {
     },
 }
 
-targetNodeID = {
+targetNodeID = {  # pylint: disable=C0103
     "targetNodeIDs": {
         "type": "array",
         "items": {

@@ -11,4 +11,4 @@ spec:
   - name: streamName
     value: "layout_apply_apply"
   - name: subjects
-    value: "layout.apply.apply.completed"
+    value: "layout_apply.apply.completed"

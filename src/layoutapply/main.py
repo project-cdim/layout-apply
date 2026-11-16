@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -22,6 +22,7 @@ from typing import Generator
 from layoutapply.apiclient import ConnectAPI, DisconnectAPI, PowerOffAPI, PowerOnAPI
 from layoutapply.common.logger import Logger
 from layoutapply.const import Action, ApiExecuteResultIdx, Operation, Result
+from layoutapply.counter import DBUpdateCounter
 from layoutapply.custom_exceptions import FailedExecuteLayoutApplyError
 from layoutapply.data import (  # noqa: E402
     Details,
@@ -78,8 +79,10 @@ def _run(  # pylint: disable=C0103, R0914
     task_list = []
     executor = _set_executor(config)
     cancel_flg = False
+    request_flg = True
     rollback_flg = False
     is_suspended = False
+    db_update_counter = DBUpdateCounter(config)
 
     logger.info("Start running")
     # List the migration procedure and obtain the size for completion judgment
@@ -90,49 +93,71 @@ def _run(  # pylint: disable=C0103, R0914
 
     current_status = _get_current_status(database, applyID)
 
-    if current_status.get("status") != Result.CANCELING:
-        _set_first_task(task_list, proc_list, executor, config, applyID)
-    else:
-        # Extract all remaining steps for cancellation and add them to the operation completion list
-        cancel_flg = True
-        logger.debug("Cancel requested detected. All tasks canceled.")
-        _add_canceld_proc(executed_list, proc_list)
-        on_loop = False
-
-    last_done = set()
+    cancel_flg, on_loop = _initialize_run_tasks(
+        current_status,
+        task_list,
+        proc_list,
+        executor,
+        config,
+        applyID,
+        logger,
+        executed_list,
+        cancel_flg,
+        on_loop,
+    )
+    now_result, request_flg, rollback_flg = create_now_result(action, current_status, request_flg, rollback_flg)
     while on_loop:
         # Wait until either of the tasks is completed
         # Tasks within "tasks" each have an execution status, and during wait, unexecuted tasks are executed
-        done, _ = wait(task_list, return_when=FIRST_COMPLETED)
-        # Get the difference set between the last completed task and
-        # most recent completed task to obtain the most recently completed task
-        latest_done = done - last_done
-        last_done = done
+        done, pending = wait(task_list, return_when=FIRST_COMPLETED, timeout=db_update_counter.get_wait_timeout_sec())
+        if len(done) == 0:
+            # Even with no completed task, consume time/count schedule state to avoid
+            # immediate wake-up loops after timeout expiry. DB result may be unchanged.
+            if db_update_counter.consume_if_due():
+                _update_layoutapply_result(
+                    database,
+                    executed_list,
+                    applyID,
+                    action in (Action.RESUME, Action.ROLLBACK_RESUME),
+                    rollback_flg,
+                    request_flg,
+                    now_result,
+                )
+            continue
+        # Keep wait targets to only non-completed futures to avoid immediate wake-up loops.
+        task_list = list(pending)
+        latest_done = set(done)
         # Obtain the interruption flag information from the most recently completed task
         if is_suspended is False:  # pragma: no cover
             is_suspended = _is_task_suspended(latest_done)
 
         if is_suspended is False:
-            current_status = _get_current_status(database, applyID)
-            if current_status.get("status") == Result.CANCELING:
-                cancel_flg = True
-                rollback_flg = current_status.get("executeRollback")
-                logger.debug("Cancel requested detected. Last procedures canceled.")
-                # If the cancel flag is set to True,
-                # wait until all the APIs of the currently executing hardware control functions are completed
-                done, _ = wait(task_list, return_when=ALL_COMPLETED)
-                latest_done = list(latest_done)
-                for last_task in done - last_done:
-                    latest_done.append(last_task)
+            cancel_flg, rollback_flg, task_list = _handle_canceling_status(
+                database,
+                applyID,
+                cancel_flg,
+                rollback_flg,
+                logger,
+                task_list,
+                latest_done,
+            )
 
         for task in latest_done:
             detail: Details = task.result()[ApiExecuteResultIdx.DETAIL]
             _add_result(detail, executed_list, proc_list, cancel_flg)
+            db_update_counter.record_completed()
 
             # Register the reflection results in the database.
-            _update_layoutapply_result(
-                database, executed_list, applyID, action in (Action.RESUME, Action.ROLLBACK_RESUME), False, True
-            )
+            if db_update_counter.consume_if_due():
+                _update_layoutapply_result(
+                    database,
+                    executed_list,
+                    applyID,
+                    action in (Action.RESUME, Action.ROLLBACK_RESUME),
+                    rollback_flg,
+                    request_flg,
+                    now_result,
+                )
 
             _set_next_task(task_list, proc_list, executed_list, executor, config, applyID)
 
@@ -152,9 +177,91 @@ def _run(  # pylint: disable=C0103, R0914
         database,
         is_suspended,
         action,
+        now_result,
     )
     logger.info("Completed successfully.")
     MessagePublisheClient(logger, config.message_broker).publish_message()
+
+
+def _initialize_run_tasks(
+    current_status: dict,
+    task_list: list,
+    proc_list: list[Procedure],
+    executor: ProcessPoolExecutor,
+    config: LayoutApplyConfig,
+    applyID: str,  # pylint: disable=C0103
+    logger: Logger,
+    executed_list: list,
+    cancel_flg: bool,
+    on_loop: bool,
+) -> tuple[bool, bool]:
+    """Initialize first task or mark all tasks canceled before loop.
+
+    Args:
+        current_status (dict): current applystatus
+        task_list (list): task list
+        proc_list (list[Procedure]): Migration procedure list
+        executor (ProcessPoolExecutor): ProcessPoolExecutor
+        config (LayoutApplyConfig): Configuration object.
+        applyID (str): layoutapply ID
+        logger (Logger): logger
+        executed_list (list): completed operations
+        cancel_flg (bool): Whether a cancellation request has been received or not.
+        on_loop (bool): Whether to continue the main processing loop.
+
+    Returns:
+        tuple[bool, bool]:
+            cancel_flg (bool): Whether a cancellation request has been received or not.
+            on_loop (bool): Whether to continue the main processing loop.
+    """
+    if current_status.get("status") != Result.CANCELING:
+        _set_first_task(task_list, proc_list, executor, config, applyID)
+    else:
+        # Extract all remaining steps for cancellation and add them to the operation completion list
+        cancel_flg = True
+        logger.debug("Cancel requested detected. All tasks canceled.")
+        _add_canceld_proc(executed_list, proc_list)
+        on_loop = False
+    return cancel_flg, on_loop
+
+
+def _handle_canceling_status(
+    database: DbAccess,
+    applyID: str,  # pylint: disable=C0103
+    cancel_flg: bool,
+    rollback_flg: bool,
+    logger: Logger,
+    task_list: list,
+    latest_done: set[Future],
+) -> tuple[bool, bool, list]:
+    """Check canceling status and wait for all running tasks when cancel is requested.
+
+    Args:
+        database (DbAccess): database object
+        applyID (str): layoutapply ID
+        cancel_flg (bool): Whether a cancellation request has been received or not.
+        rollback_flg (bool): rollback_flg
+        logger (Logger): logger
+        task_list (list): task list
+        latest_done (set[Future]): completed task list
+
+    Returns:
+        tuple[bool, bool, list]:
+            cancel_flg (bool): Whether a cancellation request has been received or not.
+            rollback_flg (bool): rollback_flg
+            task_list (list): task list
+    """
+    current_status = _get_current_status(database, applyID)
+    if current_status.get("status") == Result.CANCELING:
+        cancel_flg = True
+        rollback_flg = current_status.get("executeRollback")
+        logger.debug("Cancel requested detected. Last procedures canceled.")
+        # If the cancel flag is set to True,
+        # wait until all the APIs of the currently executing hardware control functions are completed
+        done, _ = wait(task_list, return_when=ALL_COMPLETED)
+        latest_done.update(done)
+        task_list = []
+    return cancel_flg, rollback_flg, task_list
 
 
 def _cancel_run(  # pylint: disable=C0103
@@ -163,7 +270,6 @@ def _cancel_run(  # pylint: disable=C0103
     database: DbAccess,
     config: LayoutApplyConfig,
     logger: Logger,
-    action: str,
 ):
     """Cancel routine for parallel execution (multiprocessing)
 
@@ -173,14 +279,15 @@ def _cancel_run(  # pylint: disable=C0103
         database (DbAccess): database object
         config (LayoutApplyConfig): Configuration object.
         logger (Logger): logger
-        action (str): action type. apply or resume. If not specified, apply action.
     Returns:
         list: Results of migration procedure
+        bool: Whether the process was suspended or not
     """
     executed_list = []
     task_list = []
     executor = _set_executor(config)
     is_suspended = False
+    db_update_counter = DBUpdateCounter(config)
 
     logger.info("Start rollback")
     proc_list: list[Procedure] = get_procedure_list(procedure)
@@ -188,11 +295,16 @@ def _cancel_run(  # pylint: disable=C0103
 
     _set_first_task(task_list, proc_list, executor, config, applyID)
 
-    last_done = set()
     while True:
-        done, _ = wait(task_list, return_when=FIRST_COMPLETED)
-        latest_done = done - last_done
-        last_done = done
+        done, pending = wait(task_list, return_when=FIRST_COMPLETED, timeout=db_update_counter.get_wait_timeout_sec())
+        if len(done) == 0:
+            # Keep scheduler timing progressing even when no new completed task exists.
+            # This prevents timeout-driven busy looping with stale schedule state.
+            if db_update_counter.consume_if_due():
+                _update_layoutapply_result(database, executed_list, applyID, False, True, False)
+            continue
+        task_list = list(pending)
+        latest_done = set(done)
         if is_suspended is False:  # pragma: no cover
             is_suspended = _is_task_suspended(latest_done)
 
@@ -200,11 +312,11 @@ def _cancel_run(  # pylint: disable=C0103
             execute_result = task.result()
             detail: Details = execute_result[ApiExecuteResultIdx.DETAIL]
             _add_result(detail, executed_list, proc_list, False)
+            db_update_counter.record_completed()
 
             # Register the reflection results in the database.
-            _update_layoutapply_result(
-                database, executed_list, applyID, action in (Action.RESUME, Action.ROLLBACK_RESUME), True, False
-            )
+            if db_update_counter.consume_if_due():
+                _update_layoutapply_result(database, executed_list, applyID, False, True, False)
 
             _set_next_task(task_list, proc_list, executed_list, executor, config, applyID)
 
@@ -259,6 +371,7 @@ def _update_layoutapply(  # pylint: disable=C0103
     database: DbAccess,
     is_suspended: bool,
     action: str,
+    now_result: list[Details],
 ) -> None:
     """Update layoutapply
 
@@ -273,6 +386,7 @@ def _update_layoutapply(  # pylint: disable=C0103
         database (DbAccess): database object
         is_suspended (bool): is_suspended
         action (str): action type. apply or resume. If not specified, apply action.
+        now_result: list[Details]
     """
 
     rollback_procedures_list = []
@@ -288,22 +402,21 @@ def _update_layoutapply(  # pylint: disable=C0103
         rollback_procedure = _create_rollback_proc(origin_proc_list, executed_list)
         rollback_procedures_list = [asdict(i, dict_factory=procedure_dict_factory) for i in rollback_procedure]
         if rollback_flg:
-            input_procedure = {}
-            input_procedure["procedures"] = rollback_procedures_list
+            input_procedure = {"procedures": rollback_procedures_list}
 
-            database.update_rollback_status(  # pylint: disable=C0103
+            database.register_rollback_status(  # pylint: disable=C0103
                 applyID, Result.IN_PROGRESS, rollback_procedures_list
             )
             rollback_executed_list, is_rollback_suspended = _cancel_run(
-                applyID, input_procedure, database, config, logger, action
+                applyID, input_procedure, database, config, logger
             )
 
             rollback_status, rollback_result = _create_result(rollback_executed_list, logger, is_rollback_suspended)
 
             resume_origin_proc_list = get_procedure_list(input_procedure)
             resume_executed_list = rollback_executed_list
-    procedure, apply_result, result, rollback_status, resume_result = _update_layoutapply_resume_actions(
-        action, procedure, apply_result, result, rollback_status
+    procedure, apply_result, result, rollback_status, rollback_result = _update_layoutapply_resume_actions(
+        action, procedure, apply_result, result, rollback_status, now_result, rollback_result
     )
     if Result.SUSPENDED in (result, rollback_status):
         resume_procedure = _create_resume_proc(resume_origin_proc_list, resume_executed_list)
@@ -319,7 +432,6 @@ def _update_layoutapply(  # pylint: disable=C0103
             rollback_status=rollback_status,
             rollback_result=rollback_result,
             resumeprocedures=resume_procedures_list,
-            resume_result=resume_result,
         )
     )
 
@@ -330,32 +442,37 @@ def _update_layoutapply_resume_actions(
     apply_result,
     result,
     rollback_status,
+    now_result,
+    rollback_result,
 ):
     """Update layoutapply by resume
 
     Args:
-        action (str): action type. apply or resume. If not specified, apply action.
+        action (str): action type. resume or rollback_resume. If not specified, apply action.
         procedure (dict): Migration procedure
-        apply_result (list): applyresult
+        apply_result (list): result
         result (str): executed result
         rollback_status (str): executed rollback result
+        now_result: list[Details] = None,
+        rollback_result (list): result of rollback
+
     Returns:
         procedure (dict): Migration procedure
-        apply_result (list): applyresult
+        apply_result (list): result
         result (str): executed result
         rollback_status (str): executed rollback result
-        resume_result (list): resumeresult
+        rollback_result (list): rollbackresult
     """
 
     resume_result = []
     if action == Action.RESUME:
-        resume_result = copy.deepcopy(apply_result)
-        procedure, apply_result = None, []
-    if action == Action.ROLLBACK_RESUME:
-        resume_result = copy.deepcopy(apply_result)
+        resume_result = now_result + apply_result
+        procedure, apply_result = None, resume_result
+    elif action == Action.ROLLBACK_RESUME:
+        resume_result = now_result + apply_result
         rollback_status = copy.deepcopy(result)
-        procedure, apply_result, result = None, [], ""
-    return procedure, apply_result, result, rollback_status, resume_result
+        procedure, apply_result, result, rollback_result = None, [], "", resume_result
+    return procedure, apply_result, result, rollback_status, rollback_result
 
 
 def _update_layoutapply_result(  # pylint: disable=C0103
@@ -365,6 +482,7 @@ def _update_layoutapply_result(  # pylint: disable=C0103
     resume_flg: bool,
     rollback_flg: bool,
     request_flg: bool,
+    now_result: list = None,
 ):
     """Update layoutapply result or rollback result or resume result
 
@@ -374,11 +492,15 @@ def _update_layoutapply_result(  # pylint: disable=C0103
         applyID (str): apply ID
         resume_flg (bool): resume_flg
         rollback_flg (bool): rollback_flg
-        request_flg (bool): request_flg
+        request_flg (bool): request_flg        request_flg (bool): request_flg
+        now_result (list): result for resume
     """
-    result = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+    if resume_flg:
+        result = now_result + [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+    else:
+        result = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
-    database.update_result(applyID, result, resume_flg, rollback_flg, request_flg)
+    database.update_result(applyID, result, rollback_flg, request_flg)
 
 
 def _create_result(executed_list: list[Details], logger: Logger, is_suspended: bool = False):
@@ -387,6 +509,7 @@ def _create_result(executed_list: list[Details], logger: Logger, is_suspended: b
     Args:
         executed_list (list): executed list
         logger (Logger): logger
+        is_suspended (bool): is_suspended
     Returns:
         status (str): executed result status
         applyresult (list): applyresult
@@ -410,7 +533,6 @@ def _set_first_task(  # pylint: disable=C0103
     task_list: list, proc_list: list, executor: ProcessPoolExecutor, config: LayoutApplyConfig, applyID: str
 ) -> None:
     """Set first task.
-
     Args:
         task_list (list): task list
         proc_list (list): Migration plan list
@@ -530,14 +652,10 @@ def _find_next_proc(executed_list: list, proc_list: list) -> Generator[dict, Non
     Yields:
         Iterator[Procedure]: A generator that creates the next migration procedure to execute
     """
-    completed_ids = _get_ids(executed_list, Result.COMPLETED)
+    completed_ids = set(_get_ids(executed_list, Result.COMPLETED))
     for proc in proc_list:
-        count = 0
-        for ope_id in proc.dependencies:
-            if ope_id in completed_ids:
-                count = count + 1
-            if count == len(proc.dependencies):
-                yield proc
+        if all(ope_id in completed_ids for ope_id in proc.dependencies):
+            yield proc
 
 
 def _get_ids(executed_list: list, coditions: Result) -> list:
@@ -587,6 +705,8 @@ def _create_task(  # pylint: disable=C0103
         executor (ProcessPoolExecutor): Multiprocessing pool
         config (LayoutApplyConfig) : Configuration information
         applyID (str): layoutapply ID
+    Returns:
+        Future: Future object of the executed task
     """
     api_config = None
     # Change the setting values and call class according to the operation
@@ -815,3 +935,27 @@ def _is_task_suspended(latest_done) -> bool:
             ret = True
             break
     return ret
+
+
+def create_now_result(action: str, current_status: dict, request_flg: bool, rollback_flg: bool) -> list[Details]:
+    """Create now_result for resume action
+
+    Args:
+        action (str): action type. apply or resume.
+        current_status (dict): current status of applystatus
+        request_flg (bool): flag to indicate if request is in progress
+        rollback_flg (bool): flag to indicate if rollback is in progress
+    Returns:
+        list[Details]: now_result
+        request_flg (bool): flag to indicate if request is in progress
+        rollback_flg (bool): flag to indicate if rollback is in progress
+    """
+    now_result = []
+    if action == Action.RESUME:
+        now_result = [item for item in current_status.get("result", []) if item.get("status") != "SKIPPED"]
+    elif action == Action.ROLLBACK_RESUME:
+        request_flg = False
+        rollback_flg = True
+        rollback_result = current_status.get("rollback", {}).get("result", [])
+        now_result = [item for item in rollback_result if item.get("status") != "SKIPPED"]
+    return now_result, request_flg, rollback_flg

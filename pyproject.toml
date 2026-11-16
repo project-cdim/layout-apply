@@ -3,23 +3,23 @@ distribution = true
 
 [project]
 name = "layoutapply"
-version = "0.1.0"
+version = "0.2.1"
 description = ""
 authors = [
     {name = "NEC corporation."},
 ]
 dependencies = [
-    "jsonschema<5.0.0,>=4.25.1",
-    "uvicorn<1.0.0,>=0.40.0",
-    "psycopg2-binary<3.0.0,>=2.9.11",
+    "jsonschema<5.0.0,>=4.26.0",
+    "uvicorn<1.0.0,>=0.49.0",
+    "psycopg2-binary<3.0.0,>=2.9.12",
     "iso8601<3.0.0,>=2.1.0",
     "psutil<7.0.0,>=6.1.1",
-    "tenacity<10.0.0,>=9.1.2",
+    "tenacity<10.0.0,>=9.1.4",
     "pyyaml<7.0.0,>=6.0.3",
-    "requests<3.0.0,>=2.32.5",
-    "fastapi>=0.128.0",
+    "requests<3.0.0,>=2.34.2",
+    "fastapi>=0.138.0",
 ]
-requires-python = "<4.0,>=3.14.2"
+requires-python = "<4.0,>=3.14.6"
 readme = "README.md"
 license = {text = "LICENSE"}
 
@@ -65,7 +65,7 @@ line-length = 120
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-addopts = "-v --cov --cov-branch tests --cov-report xml --capture=no --cov-report=term-missing --tb=line --cov-fail-under=100"
+addopts = "-v --cov --cov-branch --cov-report xml --capture=no --cov-report=term-missing --tb=line --cov-fail-under=100"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::SyntaxWarning",

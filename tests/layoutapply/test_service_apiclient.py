@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -18,39 +18,35 @@
 # This API may change in future versions.
 
 
-import io
 import json
 import logging
 import logging.config
 import re
 import types
-from logging import ERROR
 from time import sleep
 from uuid import uuid4
 
 import pytest
-import requests
-from pytest_httpserver import HTTPServer
 from requests import exceptions
 from werkzeug import Request, Response
 
 from layoutapply.common.logger import Logger
 from layoutapply.const import ApiExecuteResultIdx
 from layoutapply.data import Details, Procedure
-from layoutapply.service_apiclient import ExtendedProcedureAPIBase, GetServiceInformationAPI, StartAPI, StopAPI
+from layoutapply.service_apiclient import GetServiceInformationAPI, StartAPI, StopAPI
 from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 from tests.layoutapply.conftest import (
     EXTENDED_PROCEDURE_ID,
-    WORKFLOW_MANAGER_HOST,
-    WORKFLOW_MANAGER_PORT,
     WORKFLOW_MANAGER_URI,
 )
-from tests.layoutapply.test_data import procedure
 
 
 class TestServiceAPIBase:
+    """Base class for testing the Service API client."""
+
     @pytest.fixture(autouse=True)
     def setup_config(self, httpserver):
+        """Setup the configuration for the tests."""
         config = LayoutApplyConfig()
         config.workflow_manager["host"] = httpserver.host
         config.workflow_manager["port"] = httpserver.port
@@ -59,13 +55,13 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 1
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        self.config = config
+        self.config = config  # pylint:disable=W0201
 
-    def test_service_can_request_to_start_api(self, httpserver, capsys, init_db_instance):
-        # arrange
+    def test_service_can_request_to_start_api(self, httpserver, init_db_instance):  # pylint: disable=W0613
+        """Test that the service can request to start the API."""
+
         config = self.config
-
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -75,8 +71,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -88,10 +84,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -119,15 +116,16 @@ class TestServiceAPIBase:
         assert result.statusCode == 202
 
     def test_service_request_to_start_api_when_failed_to_load_the_logs(
-        self, mocker, httpserver, capfd, init_db_instance
+        self, mocker, capfd, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to start API when failed to load the logs."""
         # arrange
         config = self.config
 
         mocker.patch.object(
             Logger, "__init__", side_effect=Exception("Internal server error. Failed in log initialization")
         )
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -137,8 +135,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -158,11 +156,15 @@ class TestServiceAPIBase:
         assert result.status == "FAILED"
         assert result.statusCode == 500
         assert (
-            "[E40009]Failed to initialize log in sub process. Output log to standard output.Internal server error. Failed in log initialization"
+            "[E40009]Failed to initialize log in sub process. "
+            + "Output log to standard output.Internal server error. Failed in log initialization"
             in err
         )
 
-    def test_service_request_to_start_api_when_retry_success(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_retry_success(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when retry succeeds."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -173,7 +175,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 3
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -183,8 +185,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -197,7 +199,7 @@ class TestServiceAPIBase:
 
         call_count = 0
 
-        def custom_handler(request):
+        def custom_handler(_: Request):
             nonlocal call_count
             call_count += 1
 
@@ -225,11 +227,12 @@ class TestServiceAPIBase:
                 )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_handler(custom_handler)
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -254,7 +257,10 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {"extendedProcedureID": f"{EXTENDED_PROCEDURE_ID}"}
 
-    def test_service_request_to_start_api_when_recieve_500_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_recieve_500_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when receiving a 500 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -264,7 +270,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -274,8 +280,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -287,7 +293,7 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "150001",
@@ -305,7 +311,7 @@ class TestServiceAPIBase:
             status=500,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "150001",
@@ -347,7 +353,10 @@ class TestServiceAPIBase:
         }
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_start_api_when_recieve_503_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_recieve_503_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when receiving 503 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -357,7 +366,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -367,8 +376,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -380,13 +389,13 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {},
             status=503,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {},
             status=503,
@@ -404,7 +413,10 @@ class TestServiceAPIBase:
         assert result.responseBody == {}
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_start_api_when_recieve_404_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_recieve_404_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when receiving 404 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -414,7 +426,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -424,8 +436,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -437,10 +449,10 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"code": "340402", "message": f"targetCPUID {hostCpuId} not found"}, status=404)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"code": "340402", "message": f"targetCPUID {hostCpuId} not found"}, status=404)
 
         # act
@@ -458,7 +470,10 @@ class TestServiceAPIBase:
         }
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_start_api_when_recieve_409_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_recieve_409_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when receiving 409 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -468,7 +483,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -478,8 +493,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -491,20 +506,22 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "340901",
-                "message": f"Another extended procedure for the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
+                "message": "Another extended procedure for the same instance already "
+                + f"running: targetRequestInstanceID={targetRequestInstanceID}",
             },
             status=409,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "340901",
-                "message": f"Another extended procedure for the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
+                "message": "Another extended procedure for the same instance already "
+                + f"running: targetRequestInstanceID={targetRequestInstanceID}",
             },
             status=409,
         )
@@ -520,11 +537,15 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "340901",
-            "message": f"Another extended procedure for the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
+            "message": "Another extended procedure for the same instance already "
+            + f"running: targetRequestInstanceID={targetRequestInstanceID}",
         }
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_start_api_when_recieve_422_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_recieve_422_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when receiving 422 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -535,7 +556,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -545,8 +566,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -558,10 +579,10 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}, status=422)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}, status=422)
 
         # act
@@ -576,7 +597,10 @@ class TestServiceAPIBase:
         assert result.responseBody == {"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_start_api_when_time_out(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_time_out(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when it times out."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -589,7 +613,7 @@ class TestServiceAPIBase:
         workflow_manager_conf = config.workflow_manager.copy()
         workflow_manager_conf["timeout"] = timeout_sec
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": workflow_manager_conf,
@@ -599,8 +623,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -611,12 +635,12 @@ class TestServiceAPIBase:
             }
         )
 
-        def sleeping(request: Request):
+        def sleeping(_: Request):
             sleep(timeout_sec + 5)  # Timeout value + 5-second delay
             return Response("", status=200)
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_handler(sleeping)
 
         # act
@@ -634,7 +658,10 @@ class TestServiceAPIBase:
         }
         assert "[E40003]Timeout: Could not connect to server." in caplog.text
 
-    def test_service_request_to_start_api_when_connection_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_connection_error(
+        self, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to Start API when a connection error occurs."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -644,7 +671,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -654,8 +681,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -687,7 +714,10 @@ class TestServiceAPIBase:
         assert result.status == "FAILED"
         assert "Connection error occurred. Please check if the URL is correct." in caplog.text
 
-    def test_service_request_to_start_api_when_request_exception(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_request_exception(
+        self, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when a request exception occurs."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -697,7 +727,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -707,8 +737,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -740,7 +770,10 @@ class TestServiceAPIBase:
         assert result.status == "FAILED"
         assert "[E40008]Unexpected requests error occurred." in caplog.text
 
-    def test_service_request_to_start_api_when_polling_success(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_polling_success(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when polling is successful."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -751,7 +784,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -761,8 +794,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -774,12 +807,12 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
 
         call_count = 0
 
-        def custom_get_handler(request):
+        def custom_get_handler(_: Request):
             nonlocal call_count
             call_count += 1
 
@@ -809,7 +842,8 @@ class TestServiceAPIBase:
             )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_handler(custom_get_handler)
 
         # act
@@ -825,7 +859,10 @@ class TestServiceAPIBase:
         assert result.status == "COMPLETED"
         assert result.statusCode == 202
 
-    def test_service_request_to_start_api_when_polling_exceeded(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_polling_exceeded(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when polling exceeded."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -836,7 +873,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -846,8 +883,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -859,10 +896,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -876,7 +914,8 @@ class TestServiceAPIBase:
             status=200,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -901,18 +940,21 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert (
-            f"[E40033]The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS"
+            "[E40033]The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS"
             in caplog.text
         )
 
     def test_service_request_to_start_api_when_GetServiceInfo_receive_FAILED(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to start API when GetServiceInfo receives FAILED status."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -922,7 +964,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -932,8 +974,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -945,10 +987,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -973,18 +1016,21 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert (
-            f"[E40033]The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED"
+            "[E40033]The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED"
             in caplog.text
         )
 
     def test_service_request_to_start_api_when_polling_receive_FAILED(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to start API when polling receives FAILED status."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -995,7 +1041,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1005,8 +1051,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1018,10 +1064,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -1035,7 +1082,8 @@ class TestServiceAPIBase:
             status=200,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -1060,18 +1108,21 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert (
-            f"[E40033]The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED"
+            "[E40033]The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED"
             in caplog.text
         )
 
     def test_service_request_to_start_api_when_polling_receive_404_error(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to start API when polling receives a 404 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1082,7 +1133,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1092,8 +1143,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1105,10 +1156,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {"code": "340401", "message": f"Extended procedure {EXTENDED_PROCEDURE_ID} not found"},
             status=404,
@@ -1125,15 +1177,17 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert "[E40034]Failed to get extended process information." in caplog.text
 
     def test_service_request_to_start_api_when_polling_receive_422_error(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to start API when polling receives a 422 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1144,7 +1198,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1154,8 +1208,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1167,10 +1221,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]},
             status=422,
@@ -1187,15 +1242,17 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert "[E40034]Failed to get extended process information." in caplog.text
 
     def test_service_request_to_start_api_when_polling_receive_500_error(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to start API when polling receives a 500 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1206,7 +1263,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1216,8 +1273,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1229,10 +1286,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {},
             status=500,
@@ -1249,13 +1307,17 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert "[E40034]Failed to get extended process information." in caplog.text
 
-    def test_service_request_to_start_api_when_validate_error(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_request_to_start_api_when_validate_error(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to start API when validation error occurs."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1265,7 +1327,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1275,8 +1337,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1288,10 +1350,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -1316,12 +1379,16 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
 
         assert "[E40001]'dummy' is not one of ['IN_PROGRESS', 'COMPLETED', 'FAILED']" in caplog.text
 
-    def test_start_api_without_extended_procedure_id(self, httpserver, mocker, caplog, init_db_instance):
+    def test_start_api_without_extended_procedure_id(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test the behavior of the StartAPI when the extended procedure ID is not returned by the server."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1332,7 +1399,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1343,8 +1410,8 @@ class TestServiceAPIBase:
             }
         )
 
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         procedure = Procedure(
             **{
                 "operationID": 1,
@@ -1356,7 +1423,7 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "message": "Request accepted",
@@ -1366,7 +1433,7 @@ class TestServiceAPIBase:
         )
 
         # act
-        result, is_suspended = api_obj.execute(procedure)
+        result, _ = api_obj.execute(procedure)
 
         # assert
         assert result.operationID == 1
@@ -1376,11 +1443,12 @@ class TestServiceAPIBase:
         assert "extendedProcedureID:" not in caplog.text
         assert api_obj.get_service_api.extended_procedure_id is None
 
-    def test_service_can_request_to_stop_api(self, httpserver, init_db_instance):
+    def test_service_can_request_to_stop_api(self, httpserver, init_db_instance):  # pylint: disable=W0613
+        """Test that the service can request to stop the API."""
         # arrange
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1390,8 +1458,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1403,10 +1471,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -1434,15 +1503,16 @@ class TestServiceAPIBase:
         assert result.statusCode == 202
 
     def test_service_can_request_to_stop_api_when_failed_to_load_the_logs(
-        self, mocker, httpserver, capfd, init_db_instance
+        self, mocker, capfd, init_db_instance  # pylint: disable=W0613
     ):
+        """Test that the service can request to stop the API when it fails to load the logs."""
         # arrange
         config = self.config
 
         mocker.patch.object(
             Logger, "__init__", side_effect=Exception("Internal server error. Failed in log initialization")
         )
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1452,8 +1522,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1473,11 +1543,15 @@ class TestServiceAPIBase:
         assert result.status == "FAILED"
         assert result.statusCode == 500
         assert (
-            "[E40009]Failed to initialize log in sub process. Output log to standard output.Internal server error. Failed in log initialization"
+            "[E40009]Failed to initialize log in sub process. "
+            + "Output log to standard output.Internal server error. Failed in log initialization"
             in err
         )
 
-    def test_service_request_to_stop_api_when_retry_success(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_retry_success(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test that the service requests to stop the API and succeeds after retry."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1489,7 +1563,7 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1499,8 +1573,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1513,7 +1587,7 @@ class TestServiceAPIBase:
 
         call_count = 0
 
-        def custom_handler(request):
+        def custom_handler(_: Request):
             nonlocal call_count
             call_count += 1
 
@@ -1541,11 +1615,12 @@ class TestServiceAPIBase:
                 )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_handler(custom_handler)
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -1570,7 +1645,10 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {"extendedProcedureID": f"{EXTENDED_PROCEDURE_ID}"}
 
-    def test_service_request_to_stop_api_when_recieve_500_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_recieve_500_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when receiving a 500 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1580,7 +1658,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1590,8 +1668,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1603,7 +1681,7 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "150001",
@@ -1621,7 +1699,7 @@ class TestServiceAPIBase:
             status=500,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "150001",
@@ -1663,7 +1741,10 @@ class TestServiceAPIBase:
         }
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_stop_api_when_recieve_503_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_recieve_503_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when receiving a 503 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1673,7 +1754,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1683,8 +1764,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1696,13 +1777,13 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {},
             status=503,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {},
             status=503,
@@ -1720,7 +1801,10 @@ class TestServiceAPIBase:
         assert result.responseBody == {}
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_stop_api_when_recieve_404_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_recieve_404_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when receiving a 404 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1733,7 +1817,7 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1743,8 +1827,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1756,10 +1840,10 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"code": "340402", "message": f"targetCPUID {hostCpuId} not found"}, status=404)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"code": "340402", "message": f"targetCPUID {hostCpuId} not found"}, status=404)
 
         # act
@@ -1777,7 +1861,10 @@ class TestServiceAPIBase:
         }
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_stop_api_when_recieve_409_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_recieve_409_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when receiving a 409 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1790,7 +1877,7 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1800,8 +1887,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1813,20 +1900,22 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "340901",
-                "message": f"Another extended procedure for the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
+                "message": "Another extended procedure for "
+                + f"the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
             },
             status=409,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "code": "340901",
-                "message": f"Another extended procedure for the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
+                "message": "Another extended procedure for "
+                + f"the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
             },
             status=409,
         )
@@ -1842,11 +1931,15 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "340901",
-            "message": f"Another extended procedure for the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
+            "message": "Another extended procedure for "
+            + f"the same instance already running: targetRequestInstanceID={targetRequestInstanceID}",
         }
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_stop_api_when_recieve_422_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_recieve_422_error(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when receiving a 422 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1859,7 +1952,7 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1869,8 +1962,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1882,10 +1975,10 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}, status=422)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}, status=422)
 
         # act
@@ -1900,7 +1993,10 @@ class TestServiceAPIBase:
         assert result.responseBody == {"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]}
         assert "[E40025]A serious error has occurred. It suspends processing." in caplog.text
 
-    def test_service_request_to_stop_api_when_time_out(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_time_out(
+        self, mocker, httpserver, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when it times out."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1913,7 +2009,7 @@ class TestServiceAPIBase:
         workflow_manager_conf = config.workflow_manager.copy()
         workflow_manager_conf["timeout"] = timeout_sec
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": workflow_manager_conf,
@@ -1923,8 +2019,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -1935,12 +2031,12 @@ class TestServiceAPIBase:
             }
         )
 
-        def sleeping(request: Request):
+        def sleeping(_: Request):
             sleep(timeout_sec + 5)  # Timeout value + 5-second delay
             return Response("", status=202)
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_handler(sleeping)
 
         # act
@@ -1958,7 +2054,10 @@ class TestServiceAPIBase:
         }
         assert "[E40003]Timeout: Could not connect to server." in caplog.text
 
-    def test_service_request_to_stop_api_when_connection_error(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_connection_error(
+        self, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when a connection error occurs."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -1971,7 +2070,7 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -1981,8 +2080,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2015,7 +2114,10 @@ class TestServiceAPIBase:
         assert result.status == "FAILED"
         assert "Connection error occurred. Please check if the URL is correct." in caplog.text
 
-    def test_service_request_to_stop_api_when_request_exception(self, mocker, httpserver, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_request_exception(
+        self, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when a request exception occurs."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2028,7 +2130,7 @@ class TestServiceAPIBase:
         config.workflow_manager["extended-procedure"]["retry"]["default"]["max_count"] = 2
         config.workflow_manager["extended-procedure"]["retry"]["default"]["interval"] = 1
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2038,8 +2140,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2071,7 +2173,10 @@ class TestServiceAPIBase:
         assert result.status == "FAILED"
         assert "[E40008]Unexpected requests error occurred." in caplog.text
 
-    def test_service_request_to_stop_api_when_polling_success(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_polling_success(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when polling is successful."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2082,7 +2187,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2092,8 +2197,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2105,12 +2210,12 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
 
         call_count = 0
 
-        def custom_get_handler(request):
+        def custom_get_handler(_: Request):
             nonlocal call_count
             call_count += 1
 
@@ -2140,7 +2245,8 @@ class TestServiceAPIBase:
             )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_handler(custom_get_handler)
 
         # act
@@ -2156,7 +2262,10 @@ class TestServiceAPIBase:
         assert result.status == "COMPLETED"
         assert result.statusCode == 202
 
-    def test_service_request_to_stop_api_when_polling_exceeded(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_polling_exceeded(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when polling exceeded."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2167,7 +2276,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2177,8 +2286,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2190,10 +2299,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -2207,7 +2317,8 @@ class TestServiceAPIBase:
             status=200,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -2232,18 +2343,21 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert (
-            f"[E40033]The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS"
+            "[E40033]The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: IN_PROGRESS"
             in caplog.text
         )
 
     def test_service_request_to_stop_api_when_GetServiceInfo_receive_FAILED(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to stop API when GetServiceInfo receives FAILED."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2253,7 +2367,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2263,8 +2377,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2276,10 +2390,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -2304,18 +2419,21 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert (
-            f"[E40033]The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED"
+            "[E40033]The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED"
             in caplog.text
         )
 
     def test_service_request_to_stop_api_when_polling_receive_FAILED(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to stop API when polling receives FAILED."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2326,7 +2444,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2336,8 +2454,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2349,10 +2467,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -2366,7 +2485,8 @@ class TestServiceAPIBase:
             status=200,
         )
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -2391,18 +2511,21 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert (
-            f"[E40033]The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED"
+            "[E40033]The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED"
             in caplog.text
         )
 
     def test_service_request_to_stop_api_when_polling_receive_404_error(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to stop API when polling receives 404 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2413,7 +2536,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2423,8 +2546,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2436,10 +2559,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {"code": "340401", "message": f"Extended procedure {EXTENDED_PROCEDURE_ID} not found"},
             status=404,
@@ -2456,15 +2580,17 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert "[E40034]Failed to get extended process information." in caplog.text
 
     def test_service_request_to_stop_api_when_polling_receive_422_error(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to stop API when polling receives 422 error."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2475,7 +2601,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2485,8 +2611,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2498,10 +2624,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {"detail": [{"loc": ["string", 0], "msg": "string", "type": "string"}]},
             status=422,
@@ -2518,15 +2645,17 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert "[E40034]Failed to get extended process information." in caplog.text
 
     def test_service_request_to_stop_api_when_polling_receive_500_error(
-        self, httpserver, mocker, caplog, init_db_instance
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
     ):
+        """Test service request to stop API when polling receives 500 error"""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2537,7 +2666,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2547,8 +2676,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2560,10 +2689,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {},
             status=500,
@@ -2580,13 +2710,17 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
         assert result.status == "FAILED"
         assert result.statusCode == 202
         assert "[E40034]Failed to get extended process information." in caplog.text
 
-    def test_service_request_to_stop_api_when_validate_error(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_request_to_stop_api_when_validate_error(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service request to stop API when validation error occurs."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2596,7 +2730,7 @@ class TestServiceAPIBase:
 
         config = self.config
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2606,8 +2740,8 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2619,10 +2753,11 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": applyID,
@@ -2647,12 +2782,16 @@ class TestServiceAPIBase:
         assert result.queryParameter == ""
         assert result.responseBody == {
             "code": "E40033",
-            "message": f"The extended process could not be completed. requestInstanceID: {targetRequestInstanceID}, current: FAILED",
+            "message": "The extended process could not be completed. "
+            + f"requestInstanceID: {targetRequestInstanceID}, current: FAILED",
         }
 
         assert "[E40001]'dummy' is not one of ['IN_PROGRESS', 'COMPLETED', 'FAILED']" in caplog.text
 
-    def test_stop_api_without_extended_procedure_id(self, httpserver, mocker, caplog, init_db_instance):
+    def test_stop_api_without_extended_procedure_id(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test stop API behavior when the extended procedure ID is not returned."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2663,7 +2802,7 @@ class TestServiceAPIBase:
         config = self.config
         config.workflow_manager["extended-procedure"]["polling"]["count"] = 2
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StopAPI = StopAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2674,8 +2813,8 @@ class TestServiceAPIBase:
             }
         )
 
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         procedure = Procedure(
             **{
                 "operationID": 1,
@@ -2687,7 +2826,7 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure"), method="POST"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure"), method="POST"
         ).respond_with_json(
             {
                 "message": "Request accepted",
@@ -2697,7 +2836,7 @@ class TestServiceAPIBase:
         )
 
         # act
-        result, is_suspended = api_obj.execute(procedure)
+        result, _ = api_obj.execute(procedure)
 
         # assert
         assert result.operationID == 1
@@ -2707,7 +2846,10 @@ class TestServiceAPIBase:
         assert "extendedProcedureID:" not in caplog.text
         assert api_obj.get_service_api.extended_procedure_id is None
 
-    def test_service_can_request_to_get_service_infromation_api(self, httpserver, mocker, caplog, init_db_instance):
+    def test_service_can_request_to_get_service_infromation_api(
+        self, httpserver, mocker, caplog, init_db_instance  # pylint: disable=W0613
+    ):
+        """Test service can request to get service information API."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -2728,8 +2870,8 @@ class TestServiceAPIBase:
 
         api_obj.extended_procedure_id = EXTENDED_PROCEDURE_ID
 
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         procedure = Procedure(
             **{
                 "operationID": 1,
@@ -2741,7 +2883,8 @@ class TestServiceAPIBase:
         )
 
         httpserver.expect_request(
-            re.compile(f"\/{WORKFLOW_MANAGER_URI}\/extended-procedure\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
         ).respond_with_json(
             {
                 "applyID": str(uuid4()),
@@ -2766,10 +2909,11 @@ class TestServiceAPIBase:
         assert "Request completed. status:[200]" in caplog.text
 
     def test_service_can_request_to_get_service_information_api_when_failed_to_load_the_logs(
-        self, mocker, init_db_instance
+        self, mocker, init_db_instance, httpserver, docker_services  # pylint: disable=W0613
     ):
+        """Test service can request to get service information API when failed to load the logs."""
         # arrange
-        config = LayoutApplyConfig()
+        config = self.config
         mocker.patch.object(
             Logger, "__init__", side_effect=Exception("Internal server error. Failed in log initialization")
         )
@@ -2781,8 +2925,9 @@ class TestServiceAPIBase:
                 "features_conf": config.features,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        api_obj.extended_procedure_id = EXTENDED_PROCEDURE_ID
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2793,17 +2938,38 @@ class TestServiceAPIBase:
             }
         )
         # act
+        httpserver.expect_request(
+            re.compile(f"/{WORKFLOW_MANAGER_URI}/extended-procedure/{EXTENDED_PROCEDURE_ID}"),
+            method="GET",
+        ).respond_with_json(
+            {
+                "applyID": str(uuid4()),
+                "targetCPUID": hostCpuId,
+                "targetRequestInstanceID": targetRequestInstanceID,
+                "operation": "start",
+                "id": EXTENDED_PROCEDURE_ID,
+                "status": "COMPLETED",
+                "serviceInstanceID": str(uuid4()),
+            },
+            status=200,
+        )
         result = api_obj.execute(paylod)
         # assert
-        assert result["code"] == 503
+        httpserver.clear()
+
+        # assert
+        assert result["code"] == 200
+        assert result["service_information"]["status"] == "COMPLETED"
+        assert result["service_information"]["id"] == EXTENDED_PROCEDURE_ID
 
     @pytest.mark.parametrize("action", [("start"), ("stop")])
-    def test_service_skip_depending_on_the_setting(self, capsys, action, init_db_instance):
+    def test_service_skip_depending_on_the_setting(self, capsys, action, init_db_instance):  # pylint: disable=W0613
+        """Test service skip behavior depending on the workflow manager setting."""
         # arrange
         config = self.config
         features_workflow_manager = {"workflow_manager": False}
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2813,8 +2979,8 @@ class TestServiceAPIBase:
                 "features_conf": features_workflow_manager,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         paylod = Procedure(
             **{
                 "operationID": 1,
@@ -2837,13 +3003,14 @@ class TestServiceAPIBase:
         assert hasattr(result, "startedAt")
         assert hasattr(result, "endedAt")
 
-    def test_service_skip_without_workflow_manager_config(self, capsys, init_db_instance):
+    def test_service_skip_without_workflow_manager_config(self, capsys, init_db_instance):  # pylint: disable=W0613
+        """Test service skip behavior when the workflow manager config is missing."""
         # arrange
         config = self.config
         features_workflow_manager = {"workflow_manager": False}
         del config._config["workflow_manager"]
 
-        applyID = str(uuid4())
+        applyID = str(uuid4())  # pylint: disable=C0103
         api_obj: StartAPI = StartAPI(
             **{
                 "workflow_manager_conf": config.workflow_manager,
@@ -2853,8 +3020,8 @@ class TestServiceAPIBase:
                 "features_conf": features_workflow_manager,
             }
         )
-        hostCpuId = str(uuid4())
-        targetRequestInstanceID = str(uuid4())
+        hostCpuId = str(uuid4())  # pylint: disable=C0103
+        targetRequestInstanceID = str(uuid4())  # pylint: disable=C0103
         action = "start"
         paylod = Procedure(
             **{

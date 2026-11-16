@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -13,8 +13,8 @@
 #  under the License.
 """Test of main routine"""
 
-import io
-import logging.config
+# pylint: disable=C0302
+import logging.config  # pylint: disable=W0611 # noqa:F401
 import re
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import asdict
@@ -27,6 +27,7 @@ from psycopg2.extras import DictCursor
 from pytest_httpserver import HTTPServer
 from werkzeug import Request, Response
 
+from layoutapply.common.dateutil import get_str_now
 from layoutapply.common.logger import Logger
 from layoutapply.const import Action, IdParameter, Operation, Result
 from layoutapply.data import Details, Procedure, details_dict_factory, get_procedure_list
@@ -44,33 +45,36 @@ from layoutapply.main import (
     _get_ids,
     _get_rollback_target_proc,
     _get_skip_ids,
+    _run,
     _swap_execution_order,
     _update_layoutapply,
+    _update_layoutapply_result,
     run,
 )
-from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
+from layoutapply.setting import LayoutApplyConfig
 from layoutapply.util import create_randomname
 from tests.layoutapply.conftest import (
+    CHANGE_CANCEL_SQL,
     DEVICE_INFO_URL,
     EXTENDED_PROCEDURE_URI,
     OPERATION_URL,
     OS_BOOT_URL,
     POWER_OPERATION_URL,
+    SELECT_SQL,
     WORKFLOW_MANAGER_HOST,
     WORKFLOW_MANAGER_PORT,
 )
 from tests.layoutapply.test_data import sql
 from tests.layoutapply.test_data.procedure import multi_pattern, single_pattern, single_pattern_cancel
 
-SELECT_SQL = "SELECT * FROM applystatus WHERE applyid = %s"
-CHANGE_CANCEL_SQL = "UPDATE applystatus SET status='CANCELING', canceledat='2023/10/02 12:23:59', executerollback=FALSE WHERE applyid = %s"
-
 
 @pytest.mark.usefixtures("httpserver_listen_address")
-class TestMain:
+class TestRun:
+    """Test cases for the main routine of layoutapply."""
 
     @pytest.mark.usefixtures("hardwaremgr_fixture")
     def test_run_status_completed_when_single_migration_step(self, init_db_instance, mocker, caplog):
+        """Test run status completed when there is a single migration step."""
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
         logger.handlers.clear()
@@ -96,7 +100,7 @@ class TestMain:
                 row = cursor.fetchone()
             if row.get("status") == "IN_PROGRESS":
                 assert row.get("status") == "IN_PROGRESS"
-                for i in range(15):
+                for _ in range(15):
                     sleep(0.5)
                     cursor.execute(query=SELECT_SQL, vars=[applyid])
                     init_db_instance.commit()
@@ -108,7 +112,7 @@ class TestMain:
             # result is COMPLETED
             assert row.get("status") == "COMPLETED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -117,7 +121,8 @@ class TestMain:
             uri = config.hardware_control.get("uri")
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure from
+                # the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "COMPLETED" == detail["status"]
@@ -128,7 +133,7 @@ class TestMain:
                 match procedure["operation"]:
                     case "connect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -140,7 +145,7 @@ class TestMain:
 
                     case "disconnect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -152,7 +157,7 @@ class TestMain:
 
                     case "boot":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -161,7 +166,7 @@ class TestMain:
 
                     case "shutdown":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -171,12 +176,13 @@ class TestMain:
         assert "Published message to topic " in caplog.text
 
     @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
-    def test_run_status_completed_when_multiple_migration_steps(
-        self,
-        init_db_instance,
-        mocker,
-    ):
-        """"""
+    def test_run_status_completed_when_multiple_migration_steps(self, init_db_instance, caplog, mocker):
+        """Test run status completed when multiple migration steps."""
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -195,11 +201,11 @@ class TestMain:
                 init_db_instance.commit()
                 row = cursor.fetchone()
                 cursor.execute("SELECT * FROM applystatus WHERE applyid = %s", [applyid])
-                full_row = cursor.fetchone()
+                # full_row = cursor.fetchone()
 
             if row.get("status") == "IN_PROGRESS":
                 assert row.get("status") == "IN_PROGRESS"
-                for i in range(15):
+                for _ in range(15):
                     sleep(0.5)
                     cursor.execute(query=SELECT_SQL, vars=[applyid])
                     init_db_instance.commit()
@@ -210,7 +216,7 @@ class TestMain:
             # result is COMPLETED
             assert row.get("status") == "COMPLETED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -219,7 +225,8 @@ class TestMain:
             uri = config.hardware_control.get("uri")
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure from
+                # the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "COMPLETED" == detail["status"]
@@ -229,7 +236,7 @@ class TestMain:
                 match procedure["operation"]:
                     case "connect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -244,7 +251,7 @@ class TestMain:
 
                     case "disconnect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -259,7 +266,7 @@ class TestMain:
 
                     case "boot":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -271,7 +278,7 @@ class TestMain:
 
                     case "shutdown":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -282,7 +289,7 @@ class TestMain:
 
                     case "start":
                         assert re.fullmatch(
-                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:W605,E501
                             detail["uri"],
                         )
                         assert "POST" == detail["method"]
@@ -293,7 +300,7 @@ class TestMain:
 
                     case "stop":
                         assert re.fullmatch(
-                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:W605,E501
                             detail["uri"],
                         )
                         assert "POST" == detail["method"]
@@ -301,14 +308,14 @@ class TestMain:
                         assert 202 == detail["statusCode"]
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
+        assert "Published message to topic " in caplog.text
 
     @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_run_status_completed_when_multiple_migration_steps_setting_valid_max_workers(
         self,
         init_db_instance,
-        mocker,
     ):
-        """"""
+        """Test run status completed when multiple migration steps setting valid max workers."""
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -340,7 +347,7 @@ class TestMain:
             # result is COMPLETED
             assert row.get("status") == "COMPLETED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -349,7 +356,8 @@ class TestMain:
             uri = config.hardware_control.get("uri")
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure from
+                # the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "COMPLETED" == detail["status"]
@@ -359,7 +367,7 @@ class TestMain:
                 match procedure["operation"]:
                     case "connect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -374,7 +382,7 @@ class TestMain:
 
                     case "disconnect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -389,7 +397,7 @@ class TestMain:
 
                     case "boot":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -401,7 +409,7 @@ class TestMain:
 
                     case "shutdown":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -412,7 +420,7 @@ class TestMain:
 
                     case "start":
                         assert re.fullmatch(
-                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:W605,E501
                             detail["uri"],
                         )
                         assert "POST" == detail["method"]
@@ -423,7 +431,7 @@ class TestMain:
 
                     case "stop":
                         assert re.fullmatch(
-                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:W605,E501
                             detail["uri"],
                         )
                         assert "POST" == detail["method"]
@@ -436,9 +444,8 @@ class TestMain:
     def test_run_status_completed_when_multiple_migration_steps_setting_max_max_workers(
         self,
         init_db_instance,
-        mocker,
     ):
-        """"""
+        """Test run status completed when multiple migration steps setting max workers."""
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -470,7 +477,7 @@ class TestMain:
             # result is COMPLETED
             assert row.get("status") == "COMPLETED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -479,7 +486,8 @@ class TestMain:
             uri = config.hardware_control.get("uri")
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure from
+                # the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "COMPLETED" == detail["status"]
@@ -489,7 +497,7 @@ class TestMain:
                 match procedure["operation"]:
                     case "connect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -504,7 +512,7 @@ class TestMain:
 
                     case "disconnect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -519,7 +527,7 @@ class TestMain:
 
                     case "boot":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -531,7 +539,7 @@ class TestMain:
 
                     case "shutdown":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -544,9 +552,8 @@ class TestMain:
     def test_run_status_completed_when_multiple_migration_steps_setting_min_max_workers(
         self,
         init_db_instance,
-        mocker,
     ):
-        """"""
+        """Test run status completed when multiple migration steps setting min and max workers."""
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -578,7 +585,7 @@ class TestMain:
             # result is COMPLETED
             assert row.get("status") == "COMPLETED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -587,7 +594,8 @@ class TestMain:
             uri = config.hardware_control.get("uri")
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure from
+                # the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "COMPLETED" == detail["status"]
@@ -597,7 +605,7 @@ class TestMain:
                 match procedure["operation"]:
                     case "connect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -612,7 +620,7 @@ class TestMain:
 
                     case "disconnect":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -627,7 +635,7 @@ class TestMain:
 
                     case "boot":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -639,7 +647,7 @@ class TestMain:
 
                     case "shutdown":
                         assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                             detail["uri"],
                         )
                         assert "PUT" == detail["method"]
@@ -650,7 +658,7 @@ class TestMain:
 
                     case "start":
                         assert re.fullmatch(
-                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:W605,E501
                             detail["uri"],
                         )
                         assert "POST" == detail["method"]
@@ -661,7 +669,7 @@ class TestMain:
 
                     case "stop":
                         assert re.fullmatch(
-                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:W605,E501
                             detail["uri"],
                         )
                         assert "POST" == detail["method"]
@@ -672,6 +680,7 @@ class TestMain:
 
     @pytest.mark.usefixtures("hardwaremgr_error_fixture")
     def test_run_status_failed_when_failed_single_migration_step(self, init_db_instance, mocker, caplog):
+        """Test run status failed when a single migration step fails."""
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
         logger.handlers.clear()
@@ -707,7 +716,7 @@ class TestMain:
             # status is SUSPENDED
             assert row.get("status") == "SUSPENDED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -726,7 +735,7 @@ class TestMain:
                     match procedure["operation"]:
                         case "connect":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -742,7 +751,7 @@ class TestMain:
                             } == detail["responseBody"]
                         case "disconnect":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -758,7 +767,7 @@ class TestMain:
                             } == detail["responseBody"]
                         case "boot":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -771,7 +780,7 @@ class TestMain:
                             } == detail["responseBody"]
                         case "shutdown":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -788,6 +797,7 @@ class TestMain:
 
     @pytest.mark.usefixtures("hardwaremgr_error_fixture", "extended_procedure_error_fixture")
     def test_run_status_failed_when_failed_multiple_migration_steps(self, init_db_instance, mocker, caplog):
+        """Test run status failed when multiple migration steps fail."""
         # arrange
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
@@ -823,7 +833,7 @@ class TestMain:
             # status is SUSPENDED
             assert row.get("status") == "SUSPENDED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -843,7 +853,7 @@ class TestMain:
                     match procedure["operation"]:
                         case "connect":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -861,7 +871,7 @@ class TestMain:
                             assert detail["endedAt"] is not None
                         case "disconnect":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -880,7 +890,7 @@ class TestMain:
                         case "boot":
                             assert detail["requestBody"] == {"action": "on"}
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -894,7 +904,7 @@ class TestMain:
                             assert detail["endedAt"] is not None
                         case "shutdown":
                             assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
                                 detail["uri"],
                             )
                             assert "PUT" == detail["method"]
@@ -908,7 +918,7 @@ class TestMain:
                             assert detail["endedAt"] is not None
                         case "start":
                             assert re.fullmatch(
-                                f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                                f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:E501,W605
                                 detail["uri"],
                             )
                             assert "POST" == detail["method"]
@@ -922,7 +932,7 @@ class TestMain:
                             assert detail["endedAt"] is not None
                         case "stop":
                             assert re.fullmatch(
-                                f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                                f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",  # pylint:disable=C0301 # noqa:E501,W605
                                 detail["uri"],
                             )
                             assert "POST" == detail["method"]
@@ -948,7 +958,7 @@ class TestMain:
         assert "Published message to topic " in caplog.text
 
     def test_run_status_canceled_when_true_cancel_flag_before_execution(self, init_db_instance, mocker, caplog):
-        """"""
+        """Test that the run status is canceled when the true cancel flag is set before execution."""
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
         logger.handlers.clear()
@@ -985,12 +995,13 @@ class TestMain:
             # result is CANCELED
             assert row.get("status") == "CANCELED"
             # execution results are dumped.
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure from
+                # the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "CANCELED" == detail["status"]
@@ -1008,9 +1019,8 @@ class TestMain:
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
-        """"""
+        """Test that the run status is canceled when the true cancel flag is set on the first API execution."""
         # arrange
         param_list = [
             # no APIs to execute in parallel.
@@ -1110,29 +1120,29 @@ class TestMain:
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
 
-        def change_cancel_request(request: Request):
+        def change_cancel_request(_: Request):
             with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
                 cursor.execute(query=CHANGE_CANCEL_SQL, vars=[applyid])
                 init_db_instance.commit()
             return Response("", status=200)
 
-        httpserver.expect_oneshot_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_handler(
-            change_cancel_request
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_handler(
-            change_cancel_request
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_handler(
-            change_cancel_request
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_oneshot_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_handler(change_cancel_request)
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_handler(change_cancel_request)
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_handler(change_cancel_request)
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_handler(
-            change_cancel_request
-        )
         httpserver.expect_request(
-            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_handler(change_cancel_request)
+        httpserver.expect_request(
+            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
         ).respond_with_response(
             Response(
                 response=b'{"type": "CPU", "powerState": "Off", "powerCapability": false}',
@@ -1165,7 +1175,7 @@ class TestMain:
 
             # assert
             assert row.get("status") == "CANCELED"
-            details = row.get("applyresult")
+            details = row.get("result")
             assert row.get("rollbackprocedures") is not None
             rollback_proc_list = row.get("rollbackprocedures")
             for r_proc in rollback_proc_list:
@@ -1190,7 +1200,8 @@ class TestMain:
             uri = config.hardware_control.get("uri")
 
             for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from the result details using operationID as a condition
+                # Search for items corresponding to the migration procedure
+                # from the result details using operationID as a condition
                 detail = [i for i in details if i["operationID"] == procedure["operationID"]][0]
                 assert procedure["operationID"] == detail["operationID"]
                 assert "status" in detail
@@ -1214,8 +1225,8 @@ class TestMain:
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
+        """Test that the run status is not canceled when the true cancel flag is set on the last API execution."""
         # arrange
         param_list = [
             # no APIs to execute in parallel.
@@ -1291,31 +1302,31 @@ class TestMain:
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
 
-        def change_cancel_request(request: Request):
+        def change_cancel_request(_: Request):
             with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
                 cursor.execute(query=CHANGE_CANCEL_SQL, vars=[applyid])
                 init_db_instance.commit()
             return Response("", status=200)
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
         httpserver.expect_oneshot_request(
-            re.compile(f"\/{uri}\/{OPERATION_URL}"),
+            re.compile(f"\/{uri}\/{OPERATION_URL}"),  # noqa:W605
             method="PUT",
             data='{"action":"disconnect","deviceID":' + param_list[0]["procedures"][3]["targetDeviceID"] + "}",
         ).respond_with_handler(change_cancel_request)
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
         httpserver.expect_request(
-            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
         ).respond_with_response(
             Response(
                 response=b'{"type": "CPU", "powerState": "Off", "powerCapability": false}',
@@ -1346,7 +1357,7 @@ class TestMain:
                         break
             # assert
             assert row.get("status") == "COMPLETED"
-            details = row.get("applyresult")
+            details = row.get("result")
             assert details is not None
             assert len(details) == len(procedures["procedures"])
             uri = config.hardware_control.get("uri")
@@ -1365,8 +1376,8 @@ class TestMain:
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
+        """Test that the run status is suspended when the cancel flag is true on API failure."""
         # arrange
         param_list = [
             {
@@ -1426,20 +1437,20 @@ class TestMain:
             else:
                 return Response("", status=200)
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_handler(
-            change_cancel_request
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_handler(change_cancel_request)
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
         httpserver.expect_request(
-            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
         ).respond_with_response(
             Response(
                 response=b'{"type": "CPU", "powerState": "Off", "powerCapability": false}',
@@ -1461,7 +1472,7 @@ class TestMain:
                 row = cursor.fetchone()
             if row.get("status") == "IN_PROGRESS":
                 assert row.get("status") == "IN_PROGRESS"
-                for i in range(15):
+                for _ in range(15):
                     sleep(0.5)
                     cursor.execute(query=SELECT_SQL, vars=[applyid])
                     init_db_instance.commit()
@@ -1472,8 +1483,781 @@ class TestMain:
             assert row.get("status") == "SUSPENDED"
         httpserver.clear()
 
-    def test_find_first_proc_returns_first_migration_plan(self):
+    def test_run_continues_without_db_update_when_timeout_not_due(self, mocker):
+        """Test that the run continues without updating the database when the timeout has not yet occurred."""
+        config = mocker.MagicMock()
+        config.message_broker = {}
+        logger = mocker.MagicMock()
+        database = mocker.MagicMock()
+        executor = mocker.MagicMock()
+        future = mocker.MagicMock(spec=Future)
+        detail = Details(operationID=1, status=Result.COMPLETED)
+        scheduler = mocker.MagicMock()
 
+        future.result.return_value = (detail, False)
+        scheduler.get_wait_timeout_sec.return_value = 1
+        scheduler.consume_if_due.side_effect = [False, True]
+
+        proc_list = [
+            Procedure(operationID=1, operation="boot", targetDeviceID="device-1", dependencies=[]),
+        ]
+
+        def _set_first_task_side_effect(task_list, *_args):
+            task_list.append(future)
+
+        def _add_result_side_effect(result_detail, executed_list, *_args):
+            executed_list.append(result_detail)
+
+        mocker.patch("layoutapply.main.DbAccess", return_value=database)
+        mocker.patch("layoutapply.main._set_executor", return_value=executor)
+        mocker.patch("layoutapply.main.DBUpdateCounter", return_value=scheduler)
+        mocker.patch("layoutapply.main.get_procedure_list", return_value=proc_list)
+        mocker.patch("layoutapply.main._get_current_status", return_value={"status": Result.IN_PROGRESS})
+        mocker.patch("layoutapply.main.create_now_result", return_value=([], True, False))
+        mocker.patch("layoutapply.main._set_first_task", side_effect=_set_first_task_side_effect)
+        mocker.patch("layoutapply.main._set_next_task")
+        mocker.patch("layoutapply.main._add_result", side_effect=_add_result_side_effect)
+        mocker.patch("layoutapply.main._is_task_suspended", return_value=False)
+        update_result_mock = mocker.patch("layoutapply.main._update_layoutapply_result")
+        mocker.patch("layoutapply.main._update_layoutapply")
+        mocker.patch("layoutapply.main.MessagePublisheClient")
+        mocker.patch("layoutapply.main.wait", side_effect=[(set(), {future}), ({future}, set())])
+
+        _run({"procedures": []}, config, "apply-4", logger, Action.REQUEST)
+
+        assert update_result_mock.call_count == 1
+
+    def test_run_updates_db_result_when_timeout_and_task_completion(self, mocker):
+        """Test that the database result is updated correctly when a timeout occurs and the task completes."""
+        config = mocker.MagicMock()
+        config.message_broker = {}
+        logger = mocker.MagicMock()
+        database = mocker.MagicMock()
+        executor = mocker.MagicMock()
+        future = mocker.MagicMock(spec=Future)
+        detail = Details(operationID=1, status=Result.COMPLETED)
+        scheduler = mocker.MagicMock()
+
+        future.result.return_value = (detail, False)
+        scheduler.get_wait_timeout_sec.return_value = 1
+        scheduler.consume_if_due.side_effect = [True, True]
+
+        proc_list = [
+            Procedure(operationID=1, operation="boot", targetDeviceID="device-1", dependencies=[]),
+        ]
+
+        def _set_first_task_side_effect(task_list, *_args):
+            task_list.append(future)
+
+        def _add_result_side_effect(result_detail, executed_list, *_args):
+            executed_list.append(result_detail)
+
+        mocker.patch("layoutapply.main.DbAccess", return_value=database)
+        mocker.patch("layoutapply.main._set_executor", return_value=executor)
+        mocker.patch("layoutapply.main.DBUpdateCounter", return_value=scheduler)
+        mocker.patch("layoutapply.main.get_procedure_list", return_value=proc_list)
+        mocker.patch("layoutapply.main._get_current_status", return_value={"status": Result.IN_PROGRESS})
+        mocker.patch("layoutapply.main.create_now_result", return_value=([], True, False))
+        mocker.patch("layoutapply.main._set_first_task", side_effect=_set_first_task_side_effect)
+        mocker.patch("layoutapply.main._set_next_task")
+        mocker.patch("layoutapply.main._add_result", side_effect=_add_result_side_effect)
+        mocker.patch("layoutapply.main._is_task_suspended", return_value=False)
+        update_result_mock = mocker.patch("layoutapply.main._update_layoutapply_result")
+        mocker.patch("layoutapply.main._update_layoutapply")
+        publish_client_mock = mocker.patch("layoutapply.main.MessagePublisheClient")
+        mocker.patch("layoutapply.main.wait", side_effect=[(set(), {future}), ({future}, set())])
+
+        _run({"procedures": []}, config, "apply-1", logger, Action.REQUEST)
+
+        assert update_result_mock.call_count == 2
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        publish_client_mock.return_value.publish_message.assert_called_once()
+
+    def test_run_failure_when_failure_on_db_update(
+        self,
+        mocker,
+    ):
+        """Test run failure when there is a failure on database update."""
+        # arrange
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = psycopg2.ProgrammingError
+
+        # Create a connection object for testing.
+        mock_connection = mocker.MagicMock()
+        mock_connection.cursor.return_value = mock_cursor
+
+        # psycopg2.connect is mocked
+        mocker.patch("psycopg2.connect", return_value=mock_connection)
+
+        # psycopg2.extras.DictCursor is mocked
+        mock_dictcursor = mocker.MagicMock()
+        mock_dictcursor.__enter__.return_value = mock_cursor
+        mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
+
+        # act
+        pattern = single_pattern[0]
+        procedures = pattern[0]
+        applyID = pattern[2]  # pylint: disable=C0103
+
+        run(procedures, config, applyID)
+        assert mock_cursor.execute.call_count == 1
+
+
+class TestCancelRun:
+    """Test cases for the cancel functionality in layoutapply."""
+
+    def test_cancel_run_updates_db_result_when_timeout_and_task_completion(self, mocker):
+        """Test that the cancel run updates the database result when there is a timeout and the task has completed."""
+        config = mocker.MagicMock()
+        logger = mocker.MagicMock()
+        database = mocker.MagicMock()
+        executor = mocker.MagicMock()
+        future = mocker.MagicMock(spec=Future)
+        detail = Details(operationID=1, status=Result.COMPLETED)
+        scheduler = mocker.MagicMock()
+
+        future.result.return_value = (detail, False)
+        scheduler.get_wait_timeout_sec.return_value = 1
+        scheduler.consume_if_due.side_effect = [True, True]
+
+        proc_list = [
+            Procedure(operationID=1, operation="boot", targetDeviceID="device-1", dependencies=[]),
+        ]
+
+        def _set_first_task_side_effect(task_list, *_args):
+            task_list.append(future)
+
+        def _add_result_side_effect(result_detail, executed_list, *_args):
+            executed_list.append(result_detail)
+
+        mocker.patch("layoutapply.main._set_executor", return_value=executor)
+        mocker.patch("layoutapply.main.DBUpdateCounter", return_value=scheduler)
+        mocker.patch("layoutapply.main.get_procedure_list", return_value=proc_list)
+        mocker.patch("layoutapply.main._set_first_task", side_effect=_set_first_task_side_effect)
+        mocker.patch("layoutapply.main._set_next_task")
+        mocker.patch("layoutapply.main._add_result", side_effect=_add_result_side_effect)
+        mocker.patch("layoutapply.main._is_task_suspended", return_value=False)
+        update_result_mock = mocker.patch("layoutapply.main._update_layoutapply_result")
+        mocker.patch("layoutapply.main.wait", side_effect=[(set(), {future}), ({future}, set())])
+
+        executed_list, is_suspended = _cancel_run("apply-2", {"procedures": []}, database, config, logger)
+
+        assert is_suspended is False
+        assert len(executed_list) == 1
+        assert update_result_mock.call_count == 2
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+
+    def test_cancel_run_continues_without_db_update_when_timeout_not_due(self, mocker):
+        """Test that the cancel run continues without updating the database result when the timeout is not due."""
+        config = mocker.MagicMock()
+        logger = mocker.MagicMock()
+        database = mocker.MagicMock()
+        executor = mocker.MagicMock()
+        future = mocker.MagicMock(spec=Future)
+        detail = Details(operationID=1, status=Result.COMPLETED)
+        scheduler = mocker.MagicMock()
+
+        future.result.return_value = (detail, False)
+        scheduler.get_wait_timeout_sec.return_value = 1
+        scheduler.consume_if_due.side_effect = [False, True]
+
+        proc_list = [
+            Procedure(operationID=1, operation="boot", targetDeviceID="device-1", dependencies=[]),
+        ]
+
+        def _set_first_task_side_effect(task_list, *_args):
+            task_list.append(future)
+
+        def _add_result_side_effect(result_detail, executed_list, *_args):
+            executed_list.append(result_detail)
+
+        mocker.patch("layoutapply.main._set_executor", return_value=executor)
+        mocker.patch("layoutapply.main.DBUpdateCounter", return_value=scheduler)
+        mocker.patch("layoutapply.main.get_procedure_list", return_value=proc_list)
+        mocker.patch("layoutapply.main._set_first_task", side_effect=_set_first_task_side_effect)
+        mocker.patch("layoutapply.main._set_next_task")
+        mocker.patch("layoutapply.main._add_result", side_effect=_add_result_side_effect)
+        mocker.patch("layoutapply.main._is_task_suspended", return_value=False)
+        update_result_mock = mocker.patch("layoutapply.main._update_layoutapply_result")
+        mocker.patch("layoutapply.main.wait", side_effect=[(set(), {future}), ({future}, set())])
+
+        executed_list, is_suspended = _cancel_run("apply-5", {"procedures": []}, database, config, logger)
+
+        assert is_suspended is False
+        assert len(executed_list) == 1
+        assert update_result_mock.call_count == 1
+
+    @pytest.mark.usefixtures("hardwaremgr_fixture")
+    def test_cancel_run_status_completed_when_single_migration_step(
+        self,
+        get_db_instance,
+        init_db_instance,
+    ):
+        """Test that the cancel run correctly handles the status when there is a
+        single migration step and it is completed."""
+        # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+            cursor.execute(query=sql.get_list_insert_sql_r_2, vars=[Result.IN_PROGRESS, "[]", get_str_now(), applyid])
+        init_db_instance.commit()
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        # act
+        for pattern in single_pattern:
+            procedures = pattern[0]
+
+            executed_list, _ = _cancel_run(applyid, procedures, get_db_instance, config, Logger(config.log_config))
+            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+
+            # assert
+            assert applyresult is not None
+            assert len(applyresult) == len(procedures["procedures"])
+
+            host = config.hardware_control.get("host")
+            port = config.hardware_control.get("port")
+            uri = config.hardware_control.get("uri")
+
+            for procedure in procedures["procedures"]:
+                # Search for items corresponding to the migration procedure from
+                # result details using operationID as a condition
+                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
+                assert procedure["operationID"] == detail["operationID"]
+                assert "COMPLETED" == detail["status"]
+                # Check the URI, etc. of the hardware control API
+                # Review the mockup method with hardwaremgr_fixture as well
+
+                assert "queryParameter" not in detail
+                match procedure["operation"]:
+                    case "connect":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {
+                            "action": "connect",
+                            "deviceID": procedure["targetDeviceID"],
+                        }
+                        assert 200 == detail["statusCode"]
+
+                    case "disconnect":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {
+                            "action": "disconnect",
+                            "deviceID": procedure["targetDeviceID"],
+                        }
+                        assert 200 == detail["statusCode"]
+
+                    case "boot":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {"action": "on"}
+                        assert 200 == detail["statusCode"]
+
+                    case "shutdown":
+                        # assert re.fullmatch(
+                        #     f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                        #     detail["uri"],
+                        # )
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
+    def test_cancel_run_status_completed_when_multiple_migration_steps(
+        self,
+        get_db_instance,
+        init_db_instance,
+    ):
+        """Test that the cancel run correctly handles the status when there are
+        multiple migration steps and they are completed."""
+        # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+            cursor.execute(query=sql.get_list_insert_sql_r_2, vars=[Result.IN_PROGRESS, "[]", get_str_now(), applyid])
+        init_db_instance.commit()
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        config.workflow_manager["host"] = "localhost"
+
+        # act
+        for pattern in multi_pattern:
+            procedures = pattern[0]
+            executed_list, _ = _cancel_run(applyid, procedures, get_db_instance, config, Logger(config.log_config))
+            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+
+            # assert
+            assert applyresult is not None
+            assert len(applyresult) == len(procedures["procedures"])
+
+            host = config.hardware_control.get("host")
+            port = config.hardware_control.get("port")
+            uri = config.hardware_control.get("uri")
+
+            for procedure in procedures["procedures"]:
+                # Search for items corresponding to the migration procedure from
+                # result details using operationID as a condition
+                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
+                assert procedure["operationID"] == detail["operationID"]
+                assert "COMPLETED" == detail["status"]
+                # Check the URI, etc. of the hardware control API
+                # Review the mockup method with hardwaremgr_fixture as well
+
+                match procedure["operation"]:
+                    case "connect":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {
+                            "action": "connect",
+                            "destinationDeviceID": procedure["targetDeviceID"],
+                        }
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "disconnect":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {
+                            "action": "disconnect",
+                            "destinationDeviceID": procedure["targetDeviceID"],
+                        }
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "boot":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {"action": "on"}
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "shutdown":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
+    def test_cancel_run_status_completed_when_multiple_migration_steps_setting_valid_max_workers(
+        self,
+        get_db_instance,
+        init_db_instance,
+    ):
+        """Test that the cancel run correctly handles the status when there are
+        multiple migration steps and they are completed."""
+        # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+            cursor.execute(query=sql.get_list_insert_sql_r_2, vars=[Result.IN_PROGRESS, "[]", get_str_now(), applyid])
+        init_db_instance.commit()
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        del config.layout_apply["request"]
+        config.workflow_manager["host"] = "localhost"
+        # act
+        for pattern in multi_pattern:
+            procedures = pattern[0]
+            executed_list, _ = _cancel_run(applyid, procedures, get_db_instance, config, Logger(config.log_config))
+            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+
+            # assert
+            assert applyresult is not None
+            assert len(applyresult) == len(procedures["procedures"])
+
+            host = config.hardware_control.get("host")
+            port = config.hardware_control.get("port")
+            uri = config.hardware_control.get("uri")
+
+            for procedure in procedures["procedures"]:
+                # Search for items corresponding to the migration procedure from
+                # result details using operationID as a condition
+                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
+                assert procedure["operationID"] == detail["operationID"]
+                assert "COMPLETED" == detail["status"]
+                # Check the URI, etc. of the hardware control API
+                # Review the mockup method with hardwaremgr_fixture as well
+
+                match procedure["operation"]:
+                    case "connect":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {
+                            "action": "connect",
+                            "destinationDeviceID": procedure["targetDeviceID"],
+                        }
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "disconnect":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {
+                            "action": "disconnect",
+                            "destinationDeviceID": procedure["targetDeviceID"],
+                        }
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "boot":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert detail["requestBody"] == {"action": "on"}
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "shutdown":
+                        assert re.fullmatch(
+                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                            detail["uri"],
+                        )
+                        assert "PUT" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 200 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+    def test_cancel_run_status_failed_when_migration_step_failed(
+        self, get_db_instance, init_db_instance, httpserver: HTTPServer
+    ):
+        """Test that the cancel run status is failed when a migration step fails."""
+        # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+            cursor.execute(query=sql.get_list_insert_sql_r_2, vars=[Result.IN_PROGRESS, "[]", get_str_now(), applyid])
+        init_db_instance.commit()
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        uri = config.hardware_control.get("uri")
+
+        err_msg = {"code": "xxxx", "message": "Internal Server Error."}
+        err_code = 500
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_json(  # noqa:W605
+            err_msg, status=err_code
+        )
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_json(  # noqa:W605
+            err_msg, status=err_code
+        )
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_json(err_msg, status=err_code)
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_json(err_msg, status=err_code)
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_json(err_msg, status=err_code)
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
+        ).respond_with_json(
+            {"type": "CPU", "powerState": "Off", "powerCapability": False},
+            status=200,
+        )
+        # act
+        for pattern in single_pattern:
+            procedures = pattern[0]
+            executed_list, _ = _cancel_run(applyid, procedures, get_db_instance, config, Logger(config.log_config))
+            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+
+            # assert
+            assert applyresult is not None
+            assert len(applyresult) == len(procedures["procedures"])
+
+            for procedure in procedures["procedures"]:
+                # Search for items corresponding to the migration procedure from
+                # result details using operationID as a condition
+                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
+                assert procedure["operationID"] == detail["operationID"]
+                assert "FAILED" == detail["status"]
+                assert detail["statusCode"] == 500
+                assert detail["method"] == "PUT"
+                assert detail["responseBody"] == {
+                    "code": "xxxx",
+                    "message": "Internal Server Error.",
+                }
+                assert detail["startedAt"] is not None
+                assert detail["endedAt"] is not None
+        httpserver.clear()
+
+    @pytest.mark.usefixtures("hardwaremgr_error_fixture")
+    def test_cancel_run_status_failed_when_failed_single_migration_step(
+        self,
+        get_db_instance,
+        init_db_instance,
+    ):
+        """Test that the cancel run status is failed when a single migration step fails."""
+        # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+            cursor.execute(query=sql.get_list_insert_sql_r_2, vars=[Result.IN_PROGRESS, "[]", get_str_now(), applyid])
+        init_db_instance.commit()
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        # act
+        for pattern in single_pattern:
+            procedures = pattern[0]
+            executed_list, _ = _cancel_run(applyid, procedures, get_db_instance, config, Logger(config.log_config))
+            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+
+            # assert
+            assert applyresult is not None
+            assert len(applyresult) == len(procedures["procedures"])
+
+            host = config.hardware_control.get("host")
+            port = config.hardware_control.get("port")
+            uri = config.hardware_control.get("uri")
+
+            for procedure in procedures["procedures"]:
+                # Search for items corresponding to the migration procedure from
+                # result details using operationID as a condition
+                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
+                assert procedure["operationID"] == detail["operationID"]
+                # initially executed task results in 'Failed', and all other tasks are marked as 'SKIPPED'
+                if not procedure["dependencies"]:
+                    assert "FAILED" == detail["status"]
+
+                    match procedure["operation"]:
+                        case "connect":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert detail["requestBody"] == {
+                                "action": "connect",
+                                "deviceID": procedure["targetDeviceID"],
+                            }
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                        case "disconnect":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert detail["requestBody"] == {
+                                "action": "disconnect",
+                                "deviceID": procedure["targetDeviceID"],
+                            }
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                        case "boot":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert detail["requestBody"] == {"action": "on"}
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                        case "shutdown":
+                            # assert re.fullmatch(
+                            #     f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            #     detail["uri"],
+                            # )
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+
+    @pytest.mark.usefixtures("hardwaremgr_error_fixture")
+    def test_cancel_run_status_failed_when_failed_multiple_migration_steps(
+        self,
+        get_db_instance,
+        init_db_instance,
+    ):
+        """Test cancel run status failed when multiple migration steps fail."""
+        # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+            cursor.execute(query=sql.get_list_insert_sql_r_2, vars=[Result.IN_PROGRESS, "[]", get_str_now(), applyid])
+        init_db_instance.commit()
+        config = LayoutApplyConfig()
+        config.load_log_configs()
+        # act
+        for pattern in multi_pattern:
+            procedures = pattern[0]
+            executed_list, _ = _cancel_run(applyid, procedures, get_db_instance, config, Logger(config.log_config))
+            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
+
+            # assert
+            assert applyresult is not None
+            assert len(applyresult) == len(procedures["procedures"])
+
+            host = config.hardware_control.get("host")
+            port = config.hardware_control.get("port")
+            uri = config.hardware_control.get("uri")
+
+            for procedure in procedures["procedures"]:
+                # Search for items corresponding to the migration procedure from
+                # result details using operationID as a condition
+                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
+                assert procedure["operationID"] == detail["operationID"]
+                # initially executed task results in 'Failed', and all other tasks are marked as 'SKIPPED'
+                if not procedure["dependencies"]:
+                    assert "FAILED" == detail["status"]
+
+                    match procedure["operation"]:
+                        case "connect":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert detail["requestBody"] == {
+                                "action": "connect",
+                                "destinationDeviceID": procedure["targetDeviceID"],
+                            }
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                            assert detail["startedAt"] is not None
+                            assert detail["endedAt"] is not None
+                        case "disconnect":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert detail["requestBody"] == {
+                                "action": "disconnect",
+                                "destinationDeviceID": procedure["targetDeviceID"],
+                            }
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                            assert detail["startedAt"] is not None
+                            assert detail["endedAt"] is not None
+                        case "boot":
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert detail["requestBody"] == {"action": "on"}
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                            assert detail["startedAt"] is not None
+                            assert detail["endedAt"] is not None
+                        case "shutdown":
+                            # assert re.fullmatch(
+                            #     f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
+                            #     detail["uri"],
+                            # )
+                            assert re.fullmatch(
+                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",  # noqa:W605
+                                detail["uri"],
+                            )
+                            assert "PUT" == detail["method"]
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                            assert detail["startedAt"] is not None
+                            assert detail["endedAt"] is not None
+                else:
+                    assert "SKIPPED" == detail["status"]
+                    assert "requestBody" not in detail
+                    assert "uri" not in detail
+                    assert "method" not in detail
+                    assert "queryParameter" not in detail
+                    assert "statusCode" not in detail
+                    assert "responseBody" not in detail
+                    assert "startedAt" not in detail
+                    assert "endedAt" not in detail
+
+
+class TestMigration:
+    """Test suite for migration-related functions."""
+
+    def test_find_first_proc_returns_first_migration_plan(self):
+        """Test that _find_first_proc correctly identifies procedures with no dependencies."""
         # multiple dependencies set as empty
         proc_list = [
             Procedure(
@@ -1549,6 +2333,8 @@ class TestMain:
         assert cnt == 0
 
     def test_find_next_proc_returns_next_migration_plan(self):
+        """Test that _find_next_proc correctly identifies
+        the next procedure to execute based on completed dependencies."""
         # dependencies has one item.
         proc_list = [
             Procedure(
@@ -1637,6 +2423,7 @@ class TestMain:
         assert cnt == 0
 
     def test_get_ids_fetch_id_by_condition(self):
+        """Test that _get_ids correctly retrieves operation IDs based on their status."""
         # Ensure that the ID for the specified status can be retrieved.
         executed_list = [
             Details(operationID=2, status=Result.COMPLETED),
@@ -1655,6 +2442,7 @@ class TestMain:
         assert [3, 5] == _get_ids(executed_list, Result.FAILED)
 
     def test_get_skip_ids_returns_skipped_migration_plan(self):
+        """Test that _get_skip_ids correctly identifies procedures to be skipped based on failed dependencies."""
         # tracing back the dependencies
         failed_ids = [1]
         proc_list = [
@@ -1710,7 +2498,8 @@ class TestMain:
 
         assert [2, 3, 4] == _get_skip_ids(proc_list, failed_ids)
 
-    def test_create_task_create_task(self, docker_services):
+    def test_create_task_create_task(self, docker_services):  # pylint:disable=W0613
+        """Test the _create_task function for various operations."""
         with ProcessPoolExecutor() as executor:
             config = LayoutApplyConfig()
             config.workflow_manager["timeout"] = 3
@@ -1850,6 +2639,7 @@ class TestMain:
         ],
     )
     def test_change_operation_convert_control_type(self, procedure, expected_operation):
+        """Test changing the operation of a procedure and converting its control type."""
         proc = Procedure(**procedure)
         _change_operation(proc)
         assert proc.operation == str(expected_operation)
@@ -1894,6 +2684,7 @@ class TestMain:
         ],
     )
     def test_swap_execution_order_swap_execution_order(self, target_procedure, procedure):
+        """Test swapping the execution order of two procedures."""
         proc = Procedure(**procedure)
         target_proc = Procedure(**target_procedure)
         assert target_proc.operationID in proc.dependencies
@@ -1961,6 +2752,7 @@ class TestMain:
         target_procedure_list,
         expected_id_list,
     ):
+        """Test clearing dependencies of the target procedures."""
         target_proc_list = [Procedure(**i) for i in target_procedure_list]
         _clear_dependencies(target_proc_list)
         # operation IDs of the rollback target migration steps are removed
@@ -2112,6 +2904,7 @@ class TestMain:
         ],
     )
     def test_get_rollback_target_proc_fetch_rollback_target(self, procedure_list, executed_list):
+        """Test fetching the rollback target procedure based on executed procedures."""
         proc_list = [Procedure(**i) for i in procedure_list]
         target_proc_list = _get_rollback_target_proc(proc_list, executed_list)
         completed_id_list = [i.operationID for i in executed_list if i.status == Result.COMPLETED]
@@ -2705,6 +3498,7 @@ class TestMain:
     def test_convert_to_rollback_swap_order_and_convert_control_type(
         self, target_procedure_list, expected_rollback_list
     ):
+        """Test convert to rollback by swapping order and converting control type."""
         target_proc_list = [Procedure(**i) for i in target_procedure_list]
         rollback_list = [Procedure(**i) for i in expected_rollback_list]
         result_list = []
@@ -3458,6 +4252,7 @@ class TestMain:
     def test_create_rollback_proc_create_rollback_procedure(
         self, target_procedure_list, expected_rollback_list, executed_list
     ):
+        """Test create rollback procedure."""
         target_proc_list = [Procedure(**i) for i in target_procedure_list]
         rollback_list = [Procedure(**i) for i in expected_rollback_list]
         result_list = _create_rollback_proc(target_proc_list, executed_list)
@@ -3469,42 +4264,12 @@ class TestMain:
             tmp.dependencies = sorted(tmp.dependencies)
         assert result_list == rollback_list
 
-    def test_run_failure_when_failure_on_db_update(
-        self,
-        mocker,
-    ):
-        # arrange
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        mock_cursor = mocker.MagicMock()
-        # mock_cursor.execute.side_effect = [psycopg2.ProgrammingError]
-        mock_cursor.execute.side_effect = psycopg2.ProgrammingError
-
-        # Create a connection object for testing.
-        mock_connection = mocker.MagicMock()
-        mock_connection.cursor.return_value = mock_cursor
-
-        # psycopg2.connect is mocked
-        mocker.patch("psycopg2.connect", return_value=mock_connection)
-
-        # psycopg2.extras.DictCursor is mocked
-        mock_dictcursor = mocker.MagicMock()
-        mock_dictcursor.__enter__.return_value = mock_cursor
-        mocker.patch.object(psycopg2.extras, "DictCursor", return_value=mock_dictcursor)
-
-        # act
-        pattern = single_pattern[0]
-        procedures = pattern[0]
-        applyID = pattern[2]  # pylint: disable=C0103
-
-        run(procedures, config, applyID)
-        assert mock_cursor.execute.call_count == 1
-
     def test_update_layoutapply_rollback_when_auto_rollback_selected(
         self,
         httpserver: HTTPServer,
         init_db_instance,
     ):
+        """Test update layout apply rollback when auto rollback is selected."""
         # arrange
         base_procedures = {
             "procedures": [
@@ -3549,26 +4314,27 @@ class TestMain:
         config.load_log_configs()
         logger = Logger(config.log_config)
         database = DbAccess(logger)
+        now_result = [{"operationID": 1, "status": Result.FAILED}]
 
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
         httpserver.expect_request(
-            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
         ).respond_with_json(
             {"type": "CPU", "powerState": "Off", "powerCapability": False},
             status=200,
         )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
 
@@ -3590,15 +4356,18 @@ class TestMain:
             database,
             False,
             Action.REQUEST,
+            now_result,
         )
         # assert
         # assert rollback_status == "COMPLETED"
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
-            init_db_instance.commit()
             row = cursor.fetchone()
+            cursor.execute(query=f"SELECT * FROM rollbackstatus WHERE applyid = '{applyid}'")
+            r_row = cursor.fetchone()
+            init_db_instance.commit()
         assert row.get("status") == Result.CANCELED
-        assert row.get("rollbackstatus") == Result.COMPLETED
+        assert r_row.get("status") == Result.COMPLETED
         httpserver.clear()
 
     def test_update_layoutapply_rollback_state_suspended_when_failure_on_rollback(
@@ -3606,16 +4375,18 @@ class TestMain:
         httpserver: HTTPServer,
         init_db_instance,
     ):
+        """Test update_layoutapply sets rollback state to suspended when failure occurs during rollback."""
         # Data adjustment before testing.
         cursor = init_db_instance.cursor(cursor_factory=DictCursor)
-        cursor.execute(
-            query="""
-                INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
+        cursor.execute(query="""
+                INSERT into applystatus (applyid, status, procedures, result, rollbackprocedures, startedat, endedat,\
+                canceledat, executerollback, resumeprocedures, processid, executioncommand, processstartedat,\
+                suspendedat, resumedat
                 )
-                VALUES 
-                ('310000001a','IN_PROGRESS',null,null,null,'2023/10/02 00:00:00',null,null,null,null,null,null,null,null,null,null,null,null,null,null);
-            """
-        )
+                VALUES
+                ('310000001a','IN_PROGRESS',null,null,null,'2023/10/02 00:00:00',\
+                null,null,null,null,null,null,null,null,null);
+            """)
         init_db_instance.commit()
         # arrange
         base_procedures = {
@@ -3661,26 +4432,27 @@ class TestMain:
         config.load_log_configs()
         logger = Logger(config.log_config)
         database = DbAccess(logger)
+        now_result = [{"operationID": 1, "status": Result.FAILED}]
 
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
         httpserver.expect_request(
-            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
         ).respond_with_json(
             {"type": "CPU", "powerState": "Off", "powerCapability": False},
             status=200,
         )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=500)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=500))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
 
@@ -3699,6 +4471,7 @@ class TestMain:
             database,
             False,
             Action.REQUEST,
+            now_result,
         )
         # assert
         # assert rollback_status == "SUSPENDED"
@@ -3707,585 +4480,34 @@ class TestMain:
             init_db_instance.commit()
             row = cursor.fetchone()
             assert row.get("status") == Result.CANCELED
-            assert row.get("rollbackstatus") == Result.SUSPENDED
+            cursor.execute(query=f"SELECT * FROM rollbackstatus WHERE applyid = '{applyID}'")
+            init_db_instance.commit()
+            r_row = cursor.fetchone()
+            assert r_row.get("status") == Result.SUSPENDED
             cursor.execute(query=f"DELETE FROM applystatus WHERE applyid = '{applyID}';")
+            cursor.execute(query=f"DELETE FROM rollbackstatus WHERE applyid = '{applyID}';")
             init_db_instance.commit()
         httpserver.clear()
-
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
-    def test_cancel_run_status_completed_when_single_migration_step(
-        self,
-        get_db_instance,
-        init_db_instance,
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
-        init_db_instance.commit()
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        # act
-        for pattern in single_pattern:
-            procedures = pattern[0]
-
-            executed_list, _ = _cancel_run(
-                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
-            )
-            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
-
-            # assert
-            assert applyresult is not None
-            assert len(applyresult) == len(procedures["procedures"])
-
-            host = config.hardware_control.get("host")
-            port = config.hardware_control.get("port")
-            uri = config.hardware_control.get("uri")
-
-            for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from
-                # result details using operationID as a condition
-                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
-                assert procedure["operationID"] == detail["operationID"]
-                assert "COMPLETED" == detail["status"]
-                # Check the URI, etc. of the hardware control API
-                # Review the mockup method with hardwaremgr_fixture as well
-
-                assert "queryParameter" not in detail
-                match procedure["operation"]:
-                    case "connect":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {
-                            "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
-                        }
-                        assert 200 == detail["statusCode"]
-
-                    case "disconnect":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {
-                            "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
-                        }
-                        assert 200 == detail["statusCode"]
-
-                    case "boot":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {"action": "on"}
-                        assert 200 == detail["statusCode"]
-
-                    case "shutdown":
-                        # assert re.fullmatch(
-                        #     f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                        #     detail["uri"],
-                        # )
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
-    def test_cancel_run_status_completed_when_multiple_migration_steps(
-        self,
-        get_db_instance,
-        init_db_instance,
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
-        init_db_instance.commit()
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        config.workflow_manager["host"] = "localhost"
-
-        # act
-        for pattern in multi_pattern:
-            procedures = pattern[0]
-            executed_list, _ = _cancel_run(
-                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
-            )
-            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
-
-            # assert
-            assert applyresult is not None
-            assert len(applyresult) == len(procedures["procedures"])
-
-            host = config.hardware_control.get("host")
-            port = config.hardware_control.get("port")
-            uri = config.hardware_control.get("uri")
-
-            for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from
-                # result details using operationID as a condition
-                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
-                assert procedure["operationID"] == detail["operationID"]
-                assert "COMPLETED" == detail["status"]
-                # Check the URI, etc. of the hardware control API
-                # Review the mockup method with hardwaremgr_fixture as well
-
-                match procedure["operation"]:
-                    case "connect":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {
-                            "action": "connect",
-                            "destinationDeviceID": procedure["targetDeviceID"],
-                        }
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-                    case "disconnect":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {
-                            "action": "disconnect",
-                            "destinationDeviceID": procedure["targetDeviceID"],
-                        }
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-                    case "boot":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {"action": "on"}
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-                    case "shutdown":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
-    def test_cancel_run_status_completed_when_multiple_migration_steps_setting_valid_max_workers(
-        self,
-        get_db_instance,
-        init_db_instance,
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
-        init_db_instance.commit()
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        del config.layout_apply["request"]
-        config.workflow_manager["host"] = "localhost"
-        # act
-        for pattern in multi_pattern:
-            procedures = pattern[0]
-            executed_list, _ = _cancel_run(
-                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
-            )
-            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
-
-            # assert
-            assert applyresult is not None
-            assert len(applyresult) == len(procedures["procedures"])
-
-            host = config.hardware_control.get("host")
-            port = config.hardware_control.get("port")
-            uri = config.hardware_control.get("uri")
-
-            for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from
-                # result details using operationID as a condition
-                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
-                assert procedure["operationID"] == detail["operationID"]
-                assert "COMPLETED" == detail["status"]
-                # Check the URI, etc. of the hardware control API
-                # Review the mockup method with hardwaremgr_fixture as well
-
-                match procedure["operation"]:
-                    case "connect":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {
-                            "action": "connect",
-                            "destinationDeviceID": procedure["targetDeviceID"],
-                        }
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-                    case "disconnect":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {
-                            "action": "disconnect",
-                            "destinationDeviceID": procedure["targetDeviceID"],
-                        }
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-                    case "boot":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert detail["requestBody"] == {"action": "on"}
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-                    case "shutdown":
-                        assert re.fullmatch(
-                            f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            detail["uri"],
-                        )
-                        assert "PUT" == detail["method"]
-                        assert "queryParameter" not in detail
-                        assert 200 == detail["statusCode"]
-                        assert detail["startedAt"] is not None
-                        assert detail["endedAt"] is not None
-
-    def test_cancel_run_status_failed_when_migration_step_failed(
-        self, get_db_instance, init_db_instance, httpserver: HTTPServer
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
-        init_db_instance.commit()
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        uri = config.hardware_control.get("uri")
-
-        err_msg = {"code": "xxxx", "message": "Internal Server Error."}
-        err_code = 500
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_json(
-            err_msg, status=err_code
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_json(
-            err_msg, status=err_code
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
-            err_msg, status=err_code
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
-            err_msg, status=err_code
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
-            err_msg, status=err_code
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{DEVICE_INFO_URL}"), method="GET").respond_with_json(
-            {"type": "CPU", "powerState": "Off", "powerCapability": False},
-            status=200,
-        )
-        # act
-        for pattern in single_pattern:
-            procedures = pattern[0]
-            executed_list, _ = _cancel_run(
-                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
-            )
-            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
-
-            # assert
-            assert applyresult is not None
-            assert len(applyresult) == len(procedures["procedures"])
-
-            for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from
-                # result details using operationID as a condition
-                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
-                assert procedure["operationID"] == detail["operationID"]
-                assert "FAILED" == detail["status"]
-                assert detail["statusCode"] == 500
-                assert detail["method"] == "PUT"
-                assert detail["responseBody"] == {
-                    "code": "xxxx",
-                    "message": "Internal Server Error.",
-                }
-                assert detail["startedAt"] is not None
-                assert detail["endedAt"] is not None
-        httpserver.clear()
-
-    @pytest.mark.usefixtures("hardwaremgr_error_fixture")
-    def test_cancel_run_status_failed_when_failed_single_migration_step(
-        self,
-        get_db_instance,
-        init_db_instance,
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
-        init_db_instance.commit()
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        # act
-        for pattern in single_pattern:
-            procedures = pattern[0]
-            executed_list, _ = _cancel_run(
-                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
-            )
-            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
-
-            # assert
-            assert applyresult is not None
-            assert len(applyresult) == len(procedures["procedures"])
-
-            host = config.hardware_control.get("host")
-            port = config.hardware_control.get("port")
-            uri = config.hardware_control.get("uri")
-
-            for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from
-                # result details using operationID as a condition
-                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
-                assert procedure["operationID"] == detail["operationID"]
-                # initially executed task results in 'Failed', and all other tasks are marked as 'SKIPPED'
-                if not procedure["dependencies"]:
-                    assert "FAILED" == detail["status"]
-
-                    match procedure["operation"]:
-                        case "connect":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert detail["requestBody"] == {
-                                "action": "connect",
-                                "deviceID": procedure["targetDeviceID"],
-                            }
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                        case "disconnect":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert detail["requestBody"] == {
-                                "action": "disconnect",
-                                "deviceID": procedure["targetDeviceID"],
-                            }
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                        case "boot":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert detail["requestBody"] == {"action": "on"}
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                        case "shutdown":
-                            # assert re.fullmatch(
-                            #     f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            #     detail["uri"],
-                            # )
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-
-    @pytest.mark.usefixtures("hardwaremgr_error_fixture")
-    def test_cancel_run_status_failed_when_failed_multiple_migration_steps(
-        self,
-        get_db_instance,
-        init_db_instance,
-    ):
-        # arrange
-        applyid = create_randomname(IdParameter.LENGTH)
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
-        init_db_instance.commit()
-        config = LayoutApplyConfig()
-        config.load_log_configs()
-        # act
-        for pattern in multi_pattern:
-            procedures = pattern[0]
-            executed_list, _ = _cancel_run(
-                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
-            )
-            applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
-
-            # assert
-            assert applyresult is not None
-            assert len(applyresult) == len(procedures["procedures"])
-
-            host = config.hardware_control.get("host")
-            port = config.hardware_control.get("port")
-            uri = config.hardware_control.get("uri")
-
-            for procedure in procedures["procedures"]:
-                # Search for items corresponding to the migration procedure from
-                # result details using operationID as a condition
-                detail = [i for i in applyresult if i["operationID"] == procedure["operationID"]][0]
-                assert procedure["operationID"] == detail["operationID"]
-                # initially executed task results in 'Failed', and all other tasks are marked as 'SKIPPED'
-                if not procedure["dependencies"]:
-                    assert "FAILED" == detail["status"]
-
-                    match procedure["operation"]:
-                        case "connect":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert detail["requestBody"] == {
-                                "action": "connect",
-                                "destinationDeviceID": procedure["targetDeviceID"],
-                            }
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                            assert detail["startedAt"] is not None
-                            assert detail["endedAt"] is not None
-                        case "disconnect":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert detail["requestBody"] == {
-                                "action": "disconnect",
-                                "destinationDeviceID": procedure["targetDeviceID"],
-                            }
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                            assert detail["startedAt"] is not None
-                            assert detail["endedAt"] is not None
-                        case "boot":
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert detail["requestBody"] == {"action": "on"}
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                            assert detail["startedAt"] is not None
-                            assert detail["endedAt"] is not None
-                        case "shutdown":
-                            # assert re.fullmatch(
-                            #     f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                            #     detail["uri"],
-                            # )
-                            assert re.fullmatch(
-                                f"http:\/\/{host}:{port}\/{uri}\/{POWER_OPERATION_URL}",
-                                detail["uri"],
-                            )
-                            assert "PUT" == detail["method"]
-                            assert "queryParameter" not in detail
-                            assert 500 == detail["statusCode"]
-                            assert {
-                                "code": "xxxx",
-                                "message": "Internal Server Error.",
-                            } == detail["responseBody"]
-                            assert detail["startedAt"] is not None
-                            assert detail["endedAt"] is not None
-                else:
-                    assert "SKIPPED" == detail["status"]
-                    assert "requestBody" not in detail
-                    assert "uri" not in detail
-                    assert "method" not in detail
-                    assert "queryParameter" not in detail
-                    assert "statusCode" not in detail
-                    assert "responseBody" not in detail
-                    assert "startedAt" not in detail
-                    assert "endedAt" not in detail
 
     def test_update_layoutapply_success_when_resume(
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
+        """Test update_layoutapply success when resuming a suspended apply."""
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(
-                query="""
-                INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
+            cursor.execute(query="""
+                INSERT into applystatus (applyid, status, procedures, result, rollbackprocedures, startedat, endedat,\
+                canceledat, executerollback, resumeprocedures, processid, executioncommand, processstartedat,\
+                suspendedat, resumedat
                 )
-                VALUES 
-                ('300000009d','SUSPENDED','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',null,'2023/10/02 00:00:00',null,null,null,null,null,null,null,'{"procedures": [{"operationID": 1, "operation": "shutdown","targetDeviceID": "0001", "dependencies": []}]}',null,null,null,null,'2023/10/02 12:23:59',null);
-            """
-            )
+                VALUES
+                ('300000009d','SUSPENDED','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',null,\
+                '2023/10/02 00:00:00',null,null,null,\
+                '{"procedures": [{"operationID": 1, "operation": "shutdown","targetDeviceID": "0001",\
+                "dependencies": []}]}',null,null,null,'2023/10/02 12:23:59',null);
+            """)
             init_db_instance.commit()
         # arrange
         base_procedures = {
@@ -4331,22 +4553,23 @@ class TestMain:
         config.load_log_configs()
         logger = Logger(config.log_config)
         database = DbAccess(logger)
+        now_result = [{"operationID": 1, "status": Result.FAILED}]
 
         uri = config.hardware_control.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
 
@@ -4364,6 +4587,7 @@ class TestMain:
             database,
             False,
             Action.RESUME,
+            now_result,
         )
         # assert
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -4371,12 +4595,19 @@ class TestMain:
             init_db_instance.commit()
             row = cursor.fetchone()
         assert row.get("status") == Result.COMPLETED
-        assert row.get("resumeresult") == [
+        assert row.get("result") == [
+            {"operationID": 1, "status": "FAILED"},
             {"operationID": 1, "status": "COMPLETED"},
             {"operationID": 2, "status": "COMPLETED"},
             {"operationID": 3, "status": "COMPLETED"},
             {"operationID": 4, "status": "COMPLETED"},
         ]
+        # Check rollback table is not affected when resume normally without executing rollback.
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=f"SELECT * FROM rollbackstatus WHERE applyid = '{applyID}'")
+            init_db_instance.commit()
+            r_row = cursor.fetchone()
+        assert r_row is None
 
         httpserver.clear()
 
@@ -4384,19 +4615,30 @@ class TestMain:
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
-        """"""
+        """Test update_layoutapply success when resuming rollback."""
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            cursor.execute(
-                query="""
-                INSERT into applystatus (applyid, status, procedures, applyresult, rollbackprocedures, startedat, endedat, canceledat, executerollback, rollbackstatus, rollbackresult, rollbackstartedat, rollbackendedat, resumeprocedures, resumeresult, processid, executioncommand, processstartedat, suspendedat, resumedat
+            cursor.execute(query="""
+                INSERT into applystatus (applyid, status, procedures, result, rollbackprocedures, startedat, endedat,\
+                canceledat, executerollback, resumeprocedures, processid, executioncommand, processstartedat,\
+                suspendedat, resumedat
                 )
-                VALUES 
-                ('300000022b','CANCELED','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]','{"test": "pre_test"}','2023/10/02 00:00:00','2023/10/02 01:00:00','2023/10/02 00:30:00',TRUE,'SUSPENDED',null,'2023/10/02 00:40:00',null,'[{"operationID": 1, "operation": "shutdown","targetDeviceID": "0001", "dependencies": []}]',null,null,null,null,'2023/10/02 00:50:00',null);
-            """
-            )
+                VALUES
+                ('300000022b','CANCELED','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',\
+                '{"procedures": "pre_test"}','2023/10/02 00:00:00','2023/10/02 01:00:00','2023/10/02 00:30:00',\
+                TRUE,null,null,null,null,null,null);
+            """)
+            cursor.execute(query="""
+                INSERT into rollbackstatus (applyid, status, procedures, result, startedat, endedat, canceledat,\
+                resumeprocedures, processid, executioncommand, processstartedat, suspendedat, resumedat
+                )
+                VALUES
+                ('300000022b','SUSPENDED','{"procedures": "pre_test"}','[{"test": "test"}, {"test": "test"}]',\
+                '2023/10/02 00:40:00',null,null,\
+                '[{"operationID": 1, "operation": "shutdown","targetDeviceID": "0001", "dependencies": []}]',\
+                null,null,null,'2023/10/02 00:50:00',null);
+            """)
             init_db_instance.commit()
         # arrange
         base_procedures = {
@@ -4442,22 +4684,23 @@ class TestMain:
         config.load_log_configs()
         logger = Logger(config.log_config)
         database = DbAccess(logger)
+        now_result = [{"operationID": 1, "status": Result.FAILED}]
 
         uri = config.hardware_control.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
+        ).respond_with_response(Response("", status=200))
+        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(  # noqa:W605
             {"status": True, "IPAddress": "192.168.122.11"}, status=200
         )
 
@@ -4475,6 +4718,7 @@ class TestMain:
             database,
             False,
             Action.ROLLBACK_RESUME,
+            now_result,
         )
         httpserver.clear()
         # assert
@@ -4482,9 +4726,13 @@ class TestMain:
             cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyID}'")
             init_db_instance.commit()
             row = cursor.fetchone()
+            cursor.execute(query=f"SELECT * FROM rollbackstatus WHERE applyid = '{applyID}'")
+            init_db_instance.commit()
+            r_row = cursor.fetchone()
         assert row.get("status") == Result.CANCELED
-        assert row.get("rollbackstatus") == Result.COMPLETED
-        assert row.get("resumeresult") == [
+        assert r_row.get("status") == Result.COMPLETED
+        assert r_row.get("result") == [
+            {"operationID": 1, "status": "FAILED"},
             {"operationID": 1, "status": "COMPLETED"},
             {"operationID": 2, "status": "COMPLETED"},
             {"operationID": 3, "status": "COMPLETED"},
@@ -4494,7 +4742,7 @@ class TestMain:
     def test_create_result_status_failed_when_system_failure_occurred(
         self, httpserver: HTTPServer, init_db_instance, mocker, caplog
     ):
-        """"""
+        """Test create result status failed when system failure occurred."""
         mocker.patch("logging.config.dictConfig")
         logger = logging.getLogger("logger.py")
         logger.handlers.clear()
@@ -4524,14 +4772,14 @@ class TestMain:
         # raise timeout by sleeping longer than the timeout duration (5s).
         timeout_sec = 8
 
-        def sleeping(request: Request):
+        def sleeping(_: Request):
             sleep(timeout_sec)
 
         err_msg = {"message": "Exxxxx", "code": "ER005BAS001"}
         uri = config.hardware_control.get("uri")
         # Initial execution with 0 retries, executed only once.
         httpserver.expect_request(
-            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+            re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"  # noqa:W605
         ).respond_with_response(
             Response(
                 response=b'{"type": "CPU", "powerState": "Off", "powerCapability": false}',
@@ -4539,11 +4787,11 @@ class TestMain:
             )
         )
         httpserver.expect_ordered_request(
-            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
         ).respond_with_handler(sleeping)
         # message is not called.
         httpserver.expect_ordered_request(
-            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"
+            re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT"  # noqa:W605
         ).respond_with_json(err_msg, status=503)
 
         procedures = {"procedures": param["procedures"]}
@@ -4562,7 +4810,7 @@ class TestMain:
 
         if row.get("status") == "IN_PROGRESS":
             assert row.get("status") == "IN_PROGRESS"
-            for i in range(15):
+            for _ in range(15):
                 sleep(0.5)
                 cursor.execute(query=SELECT_SQL, vars=[applyid])
                 init_db_instance.commit()
@@ -4726,6 +4974,8 @@ class TestMain:
         ],
     )
     def test_resume_proc_create_resume_procedure(self, target_procedure_list, expected_resume_list, executed_list):
+        """Test that _create_resume_proc generates the correct resume procedure based
+        on the target procedure and executed list."""
         target_proc_list = [Procedure(**i) for i in target_procedure_list]
         resume_list = [Procedure(**i) for i in expected_resume_list]
         result_list = _create_resume_proc(target_proc_list, executed_list)
@@ -4736,3 +4986,18 @@ class TestMain:
         for tmp in resume_list:
             tmp.dependencies = sorted(tmp.dependencies)
         assert result_list == resume_list
+
+    def test_update_layoutapply_result_appends_resume_result(self, mocker):
+        """Test that _update_layoutapply_result appends the resume result to the database."""
+        database = mocker.MagicMock()
+        executed_list = [Details(operationID=2, status=Result.COMPLETED)]
+        now_result = [{"operationID": 1, "status": Result.FAILED}]
+
+        _update_layoutapply_result(database, executed_list, "apply-3", True, False, False, now_result)
+
+        database.update_result.assert_called_once_with(
+            "apply-3",
+            [{"operationID": 1, "status": Result.FAILED}, {"operationID": 2, "status": Result.COMPLETED}],
+            False,
+            False,
+        )

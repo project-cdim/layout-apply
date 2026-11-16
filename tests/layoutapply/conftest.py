@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -13,9 +13,16 @@
 #  under the License.
 import json
 import logging.config
+import multiprocessing
+import multiprocessing.process
 import os
 import re
 import uuid
+import weakref
+from concurrent.futures import ProcessPoolExecutor
+from http import HTTPStatus
+from time import sleep
+from urllib import error, request
 
 import psycopg2
 import pytest
@@ -37,13 +44,13 @@ from tests.layoutapply.test_data.migration import (
     NOTHING_NON_REMOVABLE_DEVICES_RESP,
 )
 
-OPERATION_URL = "devices\/(.*)\/aggregations"
-POWER_OPERATION_URL = "devices\/(.*)\/power"
-DEVICE_INFO_URL = "devices\/(.*)\/specs"
+OPERATION_URL = "devices/(.*)/aggregations"
+POWER_OPERATION_URL = "devices/(.*)/power"
+DEVICE_INFO_URL = "devices/(.*)/specs"
 CONF_NODES_URL = "nodes"
-GET_AVAILABLE_RESOURCES_URL = "resources\/available"
+GET_AVAILABLE_RESOURCES_URL = "resources/available"
 MIGRATION_URL = "migration-procedures"
-OS_BOOT_URL = "cpu\/(.*)\/is\-os\-ready"
+OS_BOOT_URL = "cpu/(.*)/is-os-ready"
 
 # Set according to the values in the layoutapply_config.yaml configuration
 HARDWARE_CONTROL_HOST = "localhost"
@@ -59,6 +66,159 @@ GET_WORKFLOW_MANAGER_URI = "cdim/api/v1"
 
 EXTENDED_PROCEDURE_URI = "extended-procedure"
 EXTENDED_PROCEDURE_ID = "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+
+
+LOG_PATH = "/var/log/cdim/app_layout_apply.log"
+
+
+BASE_CONFIG = {
+    "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}, "db_update_timing": {"count": 10, "time": 3}},
+    "db": {
+        "dbname": "layoutapply",
+        "user": "user01",
+        "password": "P@ssw0rd",
+        "host": "localhost",
+        "port": 5435,
+    },
+    "get_information": {
+        "host": "localhost",
+        "port": 48889,
+        "uri": "api/v1",
+        "specs": {
+            "poweroff": {
+                "polling": {
+                    "count": 5,
+                    "interval": 1,
+                },
+            },
+            "connect": {
+                "polling": {
+                    "count": 5,
+                    "interval": 1,
+                },
+            },
+            "disconnect": {
+                "polling": {
+                    "count": 5,
+                    "interval": 1,
+                },
+            },
+            "timeout": 10,
+        },
+    },
+    "workflow_manager": {
+        "host": "0.0.0.0",
+        "port": 8008,
+        "uri": "cdim/api/v1",
+        "extended-procedure": {
+            "retry": {
+                "default": {
+                    "interval": 5,
+                    "max_count": 5,
+                },
+            },
+            "polling": {
+                "count": 5,
+                "interval": 5,
+            },
+        },
+        "timeout": 30,
+    },
+    "hardware_control": {
+        "host": "localhost",
+        "port": 48889,
+        "uri": "cdim/api/v1",
+        "disconnect": {
+            "retry": {
+                "targets": [
+                    {
+                        "status_code": 503,
+                        "code": "ER005BAS001",
+                        "interval": 5,
+                        "max_count": 5,
+                    },
+                ],
+                "default": {
+                    "interval": 5,
+                    "max_count": 5,
+                },
+            },
+            "timeout": 10,
+        },
+        "isosboot": {
+            "polling": {
+                "count": 5,
+                "interval": 1,
+                "targets": [
+                    {
+                        "status_code": 204,
+                    },
+                ],
+                "skip": [
+                    {"status_code": 400, "code": "EF003BAS010"},
+                ],
+            },
+            "request": {"timeout": 2},
+            "timeout": 10,
+        },
+    },
+    "migration_procedure_generator": {
+        "host": "localhost",
+        "port": 48889,
+        "uri": "cdim/api/v1",
+        "timeout": 30,
+    },
+    "configuration_manager": {
+        "host": "localhost",
+        "port": 48889,
+        "uri": "cdim/api/v1",
+        "timeout": 30,
+    },
+    "message_broker": {
+        "host": "localhost",
+        "port": 3500,
+        "pubsub": "layout_apply_apply",
+        "topic": "layout_apply.apply.completed",
+    },
+    "features": {
+        "workflow_manager": True,
+    },
+}
+
+LOG_BASE_CONFIG = {
+    "version": 1,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)s %(message)s",
+            "datefmt": "%Y/%m/%d %H:%M:%S.%f",
+        }
+    },
+    "handlers": {
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "INFO",
+            "formatter": "standard",
+            "filename": "/var/log/cdim/app_layout_apply.log",
+            "maxBytes": 100000000,
+            "backupCount": 72,
+            "encoding": "utf-8",
+        },
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+            "formatter": "standard",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "root": {
+        "level": "INFO",
+        "handlers": ["file"],
+    },
+}
+
+
+SELECT_SQL = "SELECT * FROM applystatus WHERE applyid = %s"
+CHANGE_CANCEL_SQL = "UPDATE applystatus SET status='CANCELING', canceledat='2023/10/02 12:23:59', executerollback=FALSE WHERE applyid = %s"
 
 
 @pytest.fixture(scope="session")
@@ -104,23 +264,23 @@ def hardwaremgr_fixture(httpserver: HTTPServer):
     # httpserver.clear_all_handlers()
 
     # with httpserver.wait(stop_on_nohandler=False, timeout=0.1) as waiter:
-    httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{uri}/{OPERATION_URL}"), method="PUT").respond_with_response(
         Response("", status=200)
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{uri}/{OPERATION_URL}"), method="PUT").respond_with_response(
         Response("", status=200)
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{uri}/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
         Response("", status=200)
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{uri}/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
         Response("", status=200)
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
+    httpserver.expect_request(re.compile(f"/{uri}/{OS_BOOT_URL}"), method="GET").respond_with_json(
         {"status": True, "IPAddress": "192.168.122.11"}, status=200
     )
     httpserver.expect_request(
-        re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+        re.compile(f"/{get_information_uri}/{DEVICE_INFO_URL}"), method="GET"
     ).respond_with_json(
         {"type": "CPU", "powerState": "Off", "powerCapability": False},
         status=200,
@@ -144,10 +304,10 @@ def extended_procedure_fixture():
     workflow_manager_server.start()
 
     workflow_manager_server.expect_request(
-        re.compile(f"\/{workflow_manager_uri}\/{EXTENDED_PROCEDURE_URI}"), method="POST"
+        re.compile(f"/{workflow_manager_uri}/{EXTENDED_PROCEDURE_URI}"), method="POST"
     ).respond_with_json({"extendedProcedureID": EXTENDED_PROCEDURE_ID}, status=202)
     workflow_manager_server.expect_request(
-        re.compile(f"\/{workflow_manager_uri}\/{EXTENDED_PROCEDURE_URI}\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+        re.compile(f"/{workflow_manager_uri}/{EXTENDED_PROCEDURE_URI}/{EXTENDED_PROCEDURE_ID}"), method="GET"
     ).respond_with_json(
         {
             "applyID": str(uuid.uuid4()),
@@ -184,11 +344,11 @@ def migration_server_fixture(httpserver: HTTPServer):
     httpserver.clear()
     httpserver.clear_all_handlers()
 
-    httpserver.expect_request(re.compile(f"\/{migration_uri}\/{MIGRATION_URL}"), method="POST").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{migration_uri}/{MIGRATION_URL}"), method="POST").respond_with_response(
         Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200)
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{CONF_NODES_URL}"),
+        re.compile(f"/{config_manager_uri}/{CONF_NODES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -197,7 +357,7 @@ def migration_server_fixture(httpserver: HTTPServer):
         )
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{GET_AVAILABLE_RESOURCES_URL}"),
+        re.compile(f"/{config_manager_uri}/{GET_AVAILABLE_RESOURCES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -228,11 +388,11 @@ def migration_server_fixture_multi(httpserver: HTTPServer):
     httpserver.clear()
     httpserver.clear_all_handlers()
 
-    httpserver.expect_request(re.compile(f"\/{migration_uri}\/{MIGRATION_URL}"), method="POST").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{migration_uri}/{MIGRATION_URL}"), method="POST").respond_with_response(
         Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200)
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{CONF_NODES_URL}"),
+        re.compile(f"/{config_manager_uri}/{CONF_NODES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -241,7 +401,7 @@ def migration_server_fixture_multi(httpserver: HTTPServer):
         )
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{GET_AVAILABLE_RESOURCES_URL}"),
+        re.compile(f"/{config_manager_uri}/{GET_AVAILABLE_RESOURCES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -272,11 +432,11 @@ def migration_server_fixture_nodeid_specified(httpserver: HTTPServer):
     httpserver.clear()
     httpserver.clear_all_handlers()
 
-    httpserver.expect_request(re.compile(f"\/{migration_uri}\/{MIGRATION_URL}"), method="POST").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{migration_uri}/{MIGRATION_URL}"), method="POST").respond_with_response(
         Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200)
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{CONF_NODES_URL}"),
+        re.compile(f"/{config_manager_uri}/{CONF_NODES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -285,7 +445,7 @@ def migration_server_fixture_nodeid_specified(httpserver: HTTPServer):
         )
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{GET_AVAILABLE_RESOURCES_URL}"),
+        re.compile(f"/{config_manager_uri}/{GET_AVAILABLE_RESOURCES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -313,11 +473,11 @@ def get_available_resources_nothing_bound_devices(httpserver: HTTPServer):
     httpserver.clear()
     httpserver.clear_all_handlers()
 
-    httpserver.expect_request(re.compile(f"\/{migration_uri}\/{MIGRATION_URL}"), method="POST").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{migration_uri}/{MIGRATION_URL}"), method="POST").respond_with_response(
         Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200)
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{CONF_NODES_URL}"),
+        re.compile(f"/{config_manager_uri}/{CONF_NODES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -326,7 +486,7 @@ def get_available_resources_nothing_bound_devices(httpserver: HTTPServer):
         )
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{GET_AVAILABLE_RESOURCES_URL}"),
+        re.compile(f"/{config_manager_uri}/{GET_AVAILABLE_RESOURCES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -358,20 +518,20 @@ def hardwaremgr_error_fixture(httpserver: HTTPServer):
     httpserver.clear()
     httpserver.clear_all_handlers()
 
-    httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_json(
+    httpserver.expect_request(re.compile(f"/{uri}/{OPERATION_URL}"), method="PUT").respond_with_json(
         err_msg, status=err_code
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_json(
+    httpserver.expect_request(re.compile(f"/{uri}/{OPERATION_URL}"), method="PUT").respond_with_json(
         err_msg, status=err_code
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
+    httpserver.expect_request(re.compile(f"/{uri}/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
         err_msg, status=err_code
     )
-    httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
+    httpserver.expect_request(re.compile(f"/{uri}/{POWER_OPERATION_URL}"), method="PUT").respond_with_json(
         err_msg, status=err_code
     )
     httpserver.expect_request(
-        re.compile(f"\/{get_information_uri}\/{DEVICE_INFO_URL}"), method="GET"
+        re.compile(f"/{get_information_uri}/{DEVICE_INFO_URL}"), method="GET"
     ).respond_with_json(
         {"type": "CPU", "powerState": "Off", "powerCapability": False},
         status=200,
@@ -394,11 +554,11 @@ def extended_procedure_error_fixture():
     workflow_manager_server = HTTPServer(host=WORKFLOW_MANAGER_HOST, port=WORKFLOW_MANAGER_PORT)
     workflow_manager_server.start()
 
-    workflow_manager_server.expect_request(re.compile(f"\/{workflow_manager_uri}"), method="POST").respond_with_json(
+    workflow_manager_server.expect_request(re.compile(f"/{workflow_manager_uri}"), method="POST").respond_with_json(
         err_msg, err_code
     )
     workflow_manager_server.expect_request(
-        re.compile(f"\/{workflow_manager_uri}\/{EXTENDED_PROCEDURE_URI}\/{EXTENDED_PROCEDURE_ID}"), method="GET"
+        re.compile(f"/{workflow_manager_uri}/{EXTENDED_PROCEDURE_URI}/{EXTENDED_PROCEDURE_ID}"), method="GET"
     ).respond_with_json({}, status=503)
 
     yield
@@ -428,7 +588,7 @@ def migration_server_err_fixture(httpserver: HTTPServer):
     httpserver.clear_all_handlers()
 
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{CONF_NODES_URL}"),
+        re.compile(f"/{config_manager_uri}/{CONF_NODES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -437,7 +597,7 @@ def migration_server_err_fixture(httpserver: HTTPServer):
         )
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{GET_AVAILABLE_RESOURCES_URL}"),
+        re.compile(f"/{config_manager_uri}/{GET_AVAILABLE_RESOURCES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -446,7 +606,7 @@ def migration_server_err_fixture(httpserver: HTTPServer):
         )
     )
 
-    httpserver.expect_request(re.compile(f"\/{migration_uri}\/{MIGRATION_URL}"), method="POST").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{migration_uri}/{MIGRATION_URL}"), method="POST").respond_with_response(
         Response(
             bytes(json.dumps(api_err_msg), encoding="utf-8"),
             status=500,
@@ -474,7 +634,7 @@ def conf_manager_server_err_fixture(httpserver: HTTPServer):
         "message": "Failed to access to DB",
     }
 
-    httpserver.expect_request(re.compile(f"\/{uri}\/{CONF_NODES_URL}"), method="GET").respond_with_response(
+    httpserver.expect_request(re.compile(f"/{uri}/{CONF_NODES_URL}"), method="GET").respond_with_response(
         Response(
             bytes(json.dumps(api_err_msg), encoding="utf-8"),
             status=500,
@@ -503,7 +663,7 @@ def get_available_resources_err_fixture(httpserver: HTTPServer):
     httpserver.clear_all_handlers()
 
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{CONF_NODES_URL}"),
+        re.compile(f"/{config_manager_uri}/{CONF_NODES_URL}"),
         method="GET",
     ).respond_with_response(
         Response(
@@ -512,7 +672,7 @@ def get_available_resources_err_fixture(httpserver: HTTPServer):
         )
     )
     httpserver.expect_request(
-        re.compile(f"\/{config_manager_uri}\/{GET_AVAILABLE_RESOURCES_URL}"), method="GET"
+        re.compile(f"/{config_manager_uri}/{GET_AVAILABLE_RESOURCES_URL}"), method="GET"
     ).respond_with_response(
         Response(
             bytes(json.dumps(api_err_msg), encoding="utf-8"),
@@ -526,6 +686,90 @@ def get_available_resources_err_fixture(httpserver: HTTPServer):
 
 
 DB_CONNECT = None
+
+
+def is_dapr_ready():
+    """Check whether Dapr publish endpoint is available.
+
+    Returns:
+        bool: True if Dapr is ready, otherwise False.
+    """
+    try:
+        req = request.Request(
+            "http://localhost:3500/v1.0/publish/layout_apply_apply/layout_apply.apply.completed",
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with request.urlopen(req, timeout=2) as response:
+            return response.status == HTTPStatus.NO_CONTENT
+    except error.HTTPError, error.URLError, TimeoutError, OSError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def wait_dapr_if_needed(request):
+    """Wait for Dapr readiness only for tests that require docker services."""
+    if "docker_services" not in request.fixturenames:
+        return
+
+    docker_services = request.getfixturevalue("docker_services")
+    docker_services.wait_until_responsive(timeout=30.0, pause=0.1, check=lambda: is_dapr_ready())
+
+
+@pytest.fixture(autouse=True)
+def wait_for_processpool_shutdown(request, monkeypatch):
+    """Track process pools and close them safely in test teardown."""
+    tracked_executors = weakref.WeakSet()
+    original_init = ProcessPoolExecutor.__init__
+    original_shutdown = ProcessPoolExecutor.shutdown
+
+    def _init_and_track(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        tracked_executors.add(self)
+
+    monkeypatch.setattr(ProcessPoolExecutor, "__init__", _init_and_track)
+
+    def _shutdown_wait(self, wait=True, *, cancel_futures=False):
+        return original_shutdown(self, wait=wait, cancel_futures=cancel_futures)
+
+    monkeypatch.setattr(ProcessPoolExecutor, "shutdown", _shutdown_wait)
+    yield
+
+    for executor in list(tracked_executors):
+        try:
+            original_shutdown(executor, wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+
+@pytest.fixture(autouse=True)
+def cleanup_started_processes(monkeypatch):
+    """Track started processes and ensure they are terminated, joined, and closed."""
+    tracked_processes = weakref.WeakSet()
+    original_start = multiprocessing.process.BaseProcess.start
+
+    def _start_and_track(self, *args, **kwargs):
+        tracked_processes.add(self)
+        return original_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(multiprocessing.process.BaseProcess, "start", _start_and_track)
+    yield
+
+    for proc in list(tracked_processes):
+        try:
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=1)
+            else:
+                proc.join(timeout=0.2)
+        except Exception:
+            pass
+
+        try:
+            proc.close()
+        except Exception:
+            pass
 
 
 def is_postgresql_ready():
@@ -562,12 +806,14 @@ def init_db_instance(docker_services, mocker):
     global DB_CONNECT
     with DB_CONNECT.cursor(cursor_factory=DictCursor) as cursor:
         cursor.execute(query="TRUNCATE TABLE applystatus;")
+        cursor.execute(query="TRUNCATE TABLE rollbackstatus;")
     DB_CONNECT.commit()
     mocker.patch("psycopg2.connect", return_value=DB_CONNECT)
     mocker.patch.object(DbAccess, "close", return_value=None)
     yield DB_CONNECT
     with DB_CONNECT.cursor(cursor_factory=DictCursor) as cursor:
         cursor.execute(query="TRUNCATE TABLE applystatus;")
+        cursor.execute(query="TRUNCATE TABLE rollbackstatus;")
     DB_CONNECT.commit()
     DB_CONNECT.close()
     DB_CONNECT = None
@@ -578,3 +824,12 @@ def log_setting():
     log_config = LayoutApplyLogConfig().log_config
     log_config["disable_existing_loggers"] = False
     logging.config.dictConfig(log_config)
+
+
+def mock_run():
+    """Mock function to simulate a long-running process."""
+    cnt = 0
+    while cnt < 3:
+        sleep(1)
+        cnt += 1
+    return None

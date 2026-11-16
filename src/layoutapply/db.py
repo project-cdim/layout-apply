@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -25,7 +25,7 @@ from psycopg2.extras import DictCursor
 
 from layoutapply.common.dateutil import DATETIME_STR_FORMAT, get_str_now
 from layoutapply.common.logger import Logger
-from layoutapply.const import IdParameter, Result
+from layoutapply.const import Action, IdParameter, Result
 from layoutapply.custom_exceptions import (
     IdNotFoundException,
     MultipleInstanceError,
@@ -37,6 +37,7 @@ from layoutapply.setting import LayoutApplyConfig
 from layoutapply.util import create_applystatus_response, create_randomname
 
 TABLE_NAME = "applystatus"
+ROLLBACK_TABLE_NAME = "rollbackstatus"
 # DB connection retry limit
 LIMIT_RETRY_CONNECT = 5
 # DB connection retry interval
@@ -56,7 +57,6 @@ class UpdateOption:
     rollback_status: str
     rollback_result: list
     resumeprocedures: list
-    resume_result: list
 
 
 @dataclass
@@ -107,7 +107,7 @@ class DbAccess:
                 params.extend([Result.IN_PROGRESS, json.dumps(procedures.get("procedures", [])), date])
             else:
                 insert_query = (
-                    f"INSERT INTO {TABLE_NAME} (applyID, status, procedures, applyResult, startedAt, endedAt) "
+                    f"INSERT INTO {TABLE_NAME} (applyID, status, procedures, result, startedAt, endedAt) "
                     "VALUES(%s,%s,%s,%s,%s,%s)"
                 )
                 params.extend([Result.COMPLETED, "[]", "[]", date, date])
@@ -140,29 +140,33 @@ class DbAccess:
         """
         self._open_db_connection()
         params = []
+        r_params = []
 
-        update_query, params = self._create_query_of_update(params, options)
+        update_query, r_update_query, params, r_params = self._create_query_of_update(params, r_params, options)
 
         try:
-            self.execute_query_auto_retry_on_serializationfailure(update_query, params)
-            if self.cur.rowcount == 0:
-                self.logger.error(
-                    f"[E40020]{IdNotFoundException(options.applyID).message}",
-                    stack_info=False,
-                )
-                raise IdNotFoundException(options.applyID)
+            if len(params) > 1:
+                self.execute_query_auto_retry_on_serializationfailure(update_query, params)
+                if self.cur.rowcount == 0:
+                    self.logger.error(
+                        f"[E40020]{IdNotFoundException(options.applyID).message}",
+                        stack_info=False,
+                    )
+                    raise IdNotFoundException(options.applyID)
+            if len(r_params) > 1:
+                self.execute_query_auto_retry_on_serializationfailure(r_update_query, r_params)
 
         finally:
             self.close()
 
-    def update_rollback_status(
+    def register_rollback_status(
         self, applyID: str, rollback_status: str, rollback_procedures_list: list
     ):  # pylint: disable=C0103
-        """update rollback status
+        """register rollback status
 
         Args:
             applyID (str): layoutapply ID
-            rollback_status (str): updated rollback status
+            rollback_status (str): registered rollback status
             rollback_procedures_list (list): rollback procedures
 
         Raises:
@@ -170,22 +174,19 @@ class DbAccess:
         """
         self._open_db_connection()
 
-        update_query = f"UPDATE {TABLE_NAME} SET "
-        update_query += "rollbackStatus = %s, rollbackProcedures = %s, rollbackStartedAt = %s WHERE applyID = %s"
+        update_query = (
+            f"INSERT INTO {ROLLBACK_TABLE_NAME} (status, procedures, startedAt, applyid) VALUES(%s,%s,%s,%s) "
+        )
 
         try:
             self.execute_query_auto_retry_on_serializationfailure(
                 update_query, params=[rollback_status, json.dumps(rollback_procedures_list), get_str_now(), applyID]
             )
 
-            if self.cur.rowcount == 0:
-                self.logger.error(f"[E40020]{IdNotFoundException(applyID).message}", stack_info=False)
-                raise IdNotFoundException(applyID)
-
         finally:
             self.close()
 
-    def update_subprocess(self, pid: str, applyID: str):  # pylint: disable=C0103
+    def update_subprocess(self, pid: str, applyID: str, action: str):  # pylint: disable=C0103
         """update subprocess information
 
         Args:
@@ -196,7 +197,10 @@ class DbAccess:
         """
         self._open_db_connection()
         proc = psutil.Process(pid)
-        update_query = f"UPDATE {TABLE_NAME} SET "
+        if action == Action.ROLLBACK_RESUME:
+            update_query = f"UPDATE {ROLLBACK_TABLE_NAME} SET "
+        else:
+            update_query = f"UPDATE {TABLE_NAME} SET "
         update_query += "processID = %s, executionCommand = %s, processStartedAt = %s WHERE applyID = %s"
 
         try:
@@ -208,15 +212,12 @@ class DbAccess:
         finally:
             self.close()
 
-    def update_result(
-        self, applyID: str, result: list, resume_flg: bool, rollback_flg: bool, request_flg: bool
-    ):  # pylint: disable=C0103
+    def update_result(self, applyID: str, result: list, rollback_flg: bool, request_flg: bool):  # pylint: disable=C0103
         """update result
 
         Args:
             applyID (str): apply ID
             result (list): apply/rollback/resume result
-            resume_flg (bool): resume_flg
             rollback_flg (bool): rollback_flg
             request_flg (bool): request_flg
 
@@ -227,19 +228,16 @@ class DbAccess:
 
         update_query = None
 
-        if resume_flg and request_flg:
-            update_query = f"UPDATE {TABLE_NAME} SET resumeResult = %s WHERE applyID = %s"
+        if request_flg:
+            update_query = f"UPDATE {TABLE_NAME} SET result = %s WHERE applyID = %s"
         elif rollback_flg:
-            update_query = f"UPDATE {TABLE_NAME} SET rollbackResult = %s WHERE applyID = %s"
-        elif request_flg:
-            update_query = f"UPDATE {TABLE_NAME} SET applyResult = %s WHERE applyID = %s"
+            update_query = f"UPDATE {ROLLBACK_TABLE_NAME} SET result = %s WHERE applyID = %s"
 
         try:
             if update_query:
                 self.execute_query_auto_retry_on_serializationfailure(
                     update_query, params=[json.dumps(result), applyID]
                 )
-
                 if self.cur.rowcount == 0:
                     self.logger.error(f"[E40020]{IdNotFoundException(applyID).message}", stack_info=False)
                     raise IdNotFoundException(applyID)
@@ -264,27 +262,40 @@ class DbAccess:
             self._open_db_connection()
         select_query = (
             "SELECT "
-            "applyID, status, procedures, applyResult, rollbackProcedures"
-            ", startedAt, endedAt, canceledAt, executeRollback, rollbackStatus"
-            ", rollbackResult, rollbackStartedAt, rollbackEndedAt"
-            ", resumeProcedures, resumeResult, suspendedAt, resumedAt "
+            "applyID, status, procedures, result, rollbackProcedures, startedAt, endedAt"
+            ", canceledAt, executeRollback, resumeProcedures, suspendedAt, resumedAt "
             f"FROM {TABLE_NAME} "
+            "WHERE applyID = %s"
+        )
+        r_select_query = (
+            "SELECT "
+            "applyID, status, procedures, result, startedAt, endedAt"
+            ", canceledAt, resumeProcedures, suspendedAt, resumedAt "
+            f"FROM {ROLLBACK_TABLE_NAME} "
             "WHERE applyID = %s"
         )
         if no_connection:
             self.execute_query_auto_retry_on_serializationfailure(select_query, params=[applyID])
         else:
             self._execute_query(select_query, params=[applyID])
-
-        results = self.cur.fetchone()
-        if no_connection:
-            self.close()
-        if results is None:
+        row = self.cur.fetchone()
+        if row is None:
             self.logger.error(f"[E40020]{IdNotFoundException(applyID).message}", stack_info=False)
             raise IdNotFoundException(applyID)
 
+        if no_connection:
+            self.execute_query_auto_retry_on_serializationfailure(r_select_query, params=[applyID])
+        else:
+            self._execute_query(r_select_query, params=[applyID])
+        r_row = self.cur.fetchone()
+        if no_connection:
+            self.close()
+
         # results obtained in the array are stored in applystatus
-        applystatus = self._dict_order_norm(results)
+        applystatus = self._dict_order_norm(row)
+        if r_row is not None:
+            applystatus["rollback"] = self._dict_order_norm(r_row)
+            applystatus["rollback"].pop("applyID", None)
         self.logger.debug(f"Get Data : {applystatus}")
 
         return applystatus
@@ -308,38 +319,86 @@ class DbAccess:
         )
         return_dict = {"totalCount": self.get_total_count(where_query, params)}
 
-        if options.fields:
-            select_query = (
-                "SELECT "
-                f"{', '.join(options.fields)}"
-                ", applyID, status, startedAt, endedAt, canceledAt, executeRollback"
-                ", rollbackStatus, rollbackStartedAt, rollbackEndedAt, suspendedAt, resumedAt "
-                f"FROM {TABLE_NAME}"
-            )
-        else:
-            select_query = (
-                "SELECT "
-                "applyID, status, startedAt, endedAt, canceledAt, executeRollback"
-                ", rollbackStatus, rollbackStartedAt, rollbackEndedAt, suspendedAt, resumedAt "
-                f"FROM {TABLE_NAME}"
-            )
-        select_query += where_query
-        select_query += f" ORDER BY {options.sortBy} {options.orderBy}"
-        # If the limit is unspecified, it is necessary to add ALL to retrieve everything in Postgres.
-        select_query += f" LIMIT {options.limit or 'ALL'} OFFSET {options.offset}"
+        select_query, r_select_query = self._create_select_queries_of_get_apply_status_list(options)
+        select_query = self._append_get_apply_status_list_query_option(select_query, where_query, options)
+        r_select_query = self._append_get_apply_status_list_query_option(r_select_query, where_query, options)
+
         self.execute_query_auto_retry_on_serializationfailure(select_query, params)
         results = self.cur.fetchall()
+        self.execute_query_auto_retry_on_serializationfailure(r_select_query, params)
+        r_results = self.cur.fetchall()
         self.close()
 
-        # results obtained in the array are stored in applystatus
-        applystatus_list = []
-        for row in results:
-            applystatus = self._dict_order_norm(row)
-            applystatus_list.append(create_applystatus_response(applystatus))
+        applystatus_list = self._create_applystatus_list(results, r_results)
         self.logger.info(f"Get Data : {applystatus_list}")
         return_dict.update({"count": len(applystatus_list), "applyResults": applystatus_list})
 
         return return_dict
+
+    def _create_select_queries_of_get_apply_status_list(self, options: GetAllOption) -> tuple[str, str]:
+        """Create select queries used by get_apply_status_list."""
+        if not options.fields:
+            return self._create_default_select_queries_of_get_apply_status_list()
+
+        select_query = (
+            "SELECT "
+            f"{', '.join(options.fields)}"
+            ", applyID, status, startedAt, endedAt, canceledAt, executeRollback"
+            ", suspendedAt, resumedAt "
+            f"FROM {TABLE_NAME}"
+        )
+        fields_without_rp = [field for field in options.fields if field != "rollbackProcedures"]
+        if fields_without_rp:
+            r_select_query = (
+                "SELECT "
+                f"{', '.join(fields_without_rp)}"
+                ", applyID, status, startedAt, endedAt, canceledAt, suspendedAt, resumedAt "
+                f"FROM {ROLLBACK_TABLE_NAME}"
+            )
+        else:
+            _, r_select_query = self._create_default_select_queries_of_get_apply_status_list()
+
+        return select_query, r_select_query
+
+    def _create_default_select_queries_of_get_apply_status_list(self) -> tuple[str, str]:
+        """Create default select queries used by get_apply_status_list."""
+        select_query = (
+            "SELECT "
+            "applyID, status, startedAt, endedAt, canceledAt, executeRollback"
+            ", suspendedAt, resumedAt "
+            f"FROM {TABLE_NAME}"
+        )
+        r_select_query = (
+            "SELECT "
+            "applyID, status, startedAt, endedAt, canceledAt, suspendedAt, resumedAt "
+            f"FROM {ROLLBACK_TABLE_NAME}"
+        )
+        return select_query, r_select_query
+
+    def _append_get_apply_status_list_query_option(self, query: str, where_query: str, options: GetAllOption) -> str:
+        """Append where/order/limit options to query for get_apply_status_list."""
+        query += where_query
+        query += f" ORDER BY {options.sortBy} {options.orderBy}"
+        # If the limit is unspecified, it is necessary to add ALL to retrieve everything in Postgres.
+        query += f" LIMIT {options.limit or 'ALL'} OFFSET {options.offset}"
+        return query
+
+    def _create_applystatus_list(self, results: list, r_results: list) -> list:
+        """Merge apply and rollback rows and return API response list."""
+        rollback_map = {
+            r_applystatus.get("applyID"): r_applystatus
+            for r_applystatus in (self._dict_order_norm(r_row) for r_row in r_results)
+        }
+
+        applystatus_list = []
+        for row in results:
+            applystatus = self._dict_order_norm(row)
+            rollback_data = rollback_map.get(applystatus.get("applyID"))
+            if rollback_data is not None:
+                applystatus["rollback"] = rollback_data
+                applystatus["rollback"].pop("applyID", None)
+            applystatus_list.append(create_applystatus_response(applystatus))
+        return applystatus_list
 
     def get_total_count(self, where_query: str, params: list) -> int:
         """Get total count of apply
@@ -373,19 +432,8 @@ class DbAccess:
         """
         self._open_db_connection()
         while True:
-            select_query = (
-                "SELECT status, rollbackStatus, processID, executionCommand"
-                ", processStartedAt FROM applyStatus WHERE applyID = %s"
-            )
             try:
-                self._execute_query(select_query, params=[applyID])
-                results = self.cur.fetchone()
-                if self.cur.rowcount == 0:
-                    self.close()
-                    self.logger.error(f"[E40020]{IdNotFoundException(applyID).message}", stack_info=False)
-                    raise IdNotFoundException(applyID)
-
-                applystatus = {k: v for k, v in dict(results).items() if v is not None}
+                applystatus = self._get_applystatus_data(applyID)
                 result_status = self._exec_cancel(applyID, rollbackflag, applystatus)
                 self.conn.commit()
                 self.close()
@@ -395,6 +443,45 @@ class DbAccess:
                 continue
 
         return result_status
+
+    def _get_applystatus_data(self, applyID: str) -> dict:  # pylint: disable=C0103
+        """Get applystatus data from database
+
+        Args:
+            applyID (str): layoutapply id
+
+        Returns:
+            dict: applystatus data
+
+        Raises:
+            IdNotFoundException: when applyID is not found
+        """
+        select_query = (
+            "SELECT status, processID, executionCommand" f", processStartedAt FROM {TABLE_NAME} WHERE applyID = %s"
+        )
+        r_select_query = (
+            "SELECT status, processID, executionCommand"
+            f", processStartedAt FROM {ROLLBACK_TABLE_NAME} WHERE applyID = %s"
+        )
+
+        self._execute_query(select_query, params=[applyID])
+        row = self.cur.fetchone()
+        row_count = self.cur.rowcount
+
+        self._execute_query(r_select_query, params=[applyID])
+        r_row = self.cur.fetchone()
+        r_row_count = self.cur.rowcount
+
+        if row_count == 0 and r_row_count == 0:
+            self.close()
+            self.logger.error(f"[E40020]{IdNotFoundException(applyID).message}", stack_info=False)
+            raise IdNotFoundException(applyID)
+
+        applystatus = {k: v for k, v in dict(row).items() if v is not None}
+        if r_row_count != 0 and r_row is not None:
+            applystatus["rollback"] = {k: v for k, v in dict(r_row).items() if v is not None}
+
+        return applystatus
 
     def _exec_cancel(self, id_: str, rollbackflag: bool, applystatus: dict) -> dict:  # pylint: disable=C0103
         """Exec cancel
@@ -408,7 +495,7 @@ class DbAccess:
             result_status (dict): cancel result
         """
         status = applystatus.get("status")
-        r_status = applystatus.get("rollbackstatus")
+        r_status = applystatus.get("rollback", {}).get("status", None)
         # Store the return values with the pre-transition state (pre_xxx),
         # reflected state after the transition (status), and the rollback state (r_status)
         result_status = {
@@ -426,7 +513,7 @@ class DbAccess:
                 result_status["status"] = Result.FAILED
                 self._requst_cancel(id_, False, Result.FAILED)
         elif status == Result.CANCELED and r_status == Result.IN_PROGRESS:
-            if self._is_subprocess_exist(applystatus) is False:
+            if self._is_subprocess_exist(applystatus.get("rollback", {})) is False:
                 result_status["r_status"] = Result.FAILED
                 self._requst_cancel(id_, False, status, r_status)
         elif status == Result.SUSPENDED:
@@ -509,10 +596,10 @@ class DbAccess:
                 applystatus = self.get_apply_status(applyID, no_connection=False)
                 if (
                     applystatus.get("status") == Result.SUSPENDED
-                    or applystatus.get("rollbackStatus") == Result.SUSPENDED
+                    or applystatus.get("rollback", {}).get("status", None) == Result.SUSPENDED
                 ):
                     self._request_resume(applyID, applystatus)  # pylint: disable=C0103
-                self.conn.commit()
+                    self.conn.commit()
                 break
             except SerializationFailure:
                 self.conn.rollback()
@@ -530,12 +617,11 @@ class DbAccess:
         Raises:
             IdNotFoundException
         """
-        update_query = f"UPDATE {TABLE_NAME} SET "
+        update_query: str
         if applystatus.get("status") == Result.SUSPENDED:
-            update_query += "status = %s, resumedAt = %s WHERE applyID = %s"
-        if applystatus.get("rollbackStatus") == Result.SUSPENDED:
-            update_query += "rollbackStatus = %s, resumedAt = %s WHERE applyID = %s"
-
+            update_query = f"UPDATE {TABLE_NAME} SET status = %s, resumedAt = %s WHERE applyID = %s"
+        if applystatus.get("rollback", {}).get("status") == Result.SUSPENDED:
+            update_query = f"UPDATE {ROLLBACK_TABLE_NAME} SET status = %s, resumedAt = %s WHERE applyID = %s"
         self._execute_query(update_query, params=[Result.IN_PROGRESS, get_str_now(), applyID])
         if self.cur.rowcount == 0:
             self.close()
@@ -548,20 +634,22 @@ class DbAccess:
         Returns:
              dict: running layoutapply data
         """
-        select_query = (
-            "SELECT applyID, status, rollbackStatus "
-            f"FROM {TABLE_NAME} "
-            "WHERE status IN (%s, %s, %s) OR rollbackStatus IN (%s, %s) "
-        )
+        select_query = f"SELECT applyID, status FROM {TABLE_NAME} " "WHERE status IN (%s, %s, %s)"
+        r_select_query = f"SELECT applyID, status FROM {ROLLBACK_TABLE_NAME} " "WHERE status IN (%s, %s)"
         self._execute_query(
             select_query,
-            params=[Result.IN_PROGRESS, Result.CANCELING, Result.SUSPENDED]
-            # rollbackStatus conditions
-            + [Result.IN_PROGRESS, Result.SUSPENDED],
+            [Result.IN_PROGRESS, Result.CANCELING, Result.SUSPENDED],
         )
-        results = self.cur.fetchone()
+        row = self.cur.fetchone()
+        self._execute_query(
+            r_select_query,
+            [Result.IN_PROGRESS, Result.SUSPENDED],
+        )
+        r_row = self.cur.fetchone()
         # results obtained in the array are stored in applystatus
-        applystatus = self._dict_order_norm(results) if results is not None else {}
+        applystatus = self._dict_order_norm(row) if row is not None else {}
+        if r_row is not None:
+            applystatus["rollback"] = self._dict_order_norm(r_row)
         self.logger.info(f"Get running data : {applystatus}")
         return applystatus
 
@@ -577,13 +665,20 @@ class DbAccess:
         """
         if (
             applystatus.get("status") in [Result.IN_PROGRESS, Result.CANCELING]
-            or applystatus.get("rollbackStatus") == Result.IN_PROGRESS
+            or applystatus.get("rollback", {}).get("status") == Result.IN_PROGRESS
         ):
             self.conn.rollback()
             raise MultipleInstanceError()
-        if applystatus.get("status") == Result.SUSPENDED or applystatus.get("rollbackStatus") == Result.SUSPENDED:
+        if (
+            applystatus.get("status") == Result.SUSPENDED
+            or applystatus.get("rollback", {}).get("status") == Result.SUSPENDED
+        ):
             self.conn.rollback()
-            raise SuspendedDataExistException(applystatus.get("applyID"))
+            if applystatus.get("status") == Result.SUSPENDED:
+                applyid = applystatus.get("applyID")
+            else:
+                applyid = applystatus.get("rollback").get("applyID")
+            raise SuspendedDataExistException(applyid)
 
     def delete(
         self,
@@ -601,8 +696,12 @@ class DbAccess:
 
         delete_query = f"DELETE FROM {TABLE_NAME}"
         delete_query += " WHERE applyID = %s"
+        r_delete_query = f"DELETE FROM {ROLLBACK_TABLE_NAME}"
+        r_delete_query += " WHERE applyID = %s"
 
         try:
+            # applyID is linked as a foreign key, so delete it from rollback table first.
+            self.execute_query_auto_retry_on_serializationfailure(r_delete_query, params=[applyID])
             self.execute_query_auto_retry_on_serializationfailure(delete_query, params=[applyID])
 
             if self.cur.rowcount == 0:
@@ -685,11 +784,11 @@ class DbAccess:
 
     def _create_update_query(  # pylint: disable=C0103
         self,
-        applyresult: list,
-        rollbackprocedures: dict,
-        resumeprocedures: dict,
+        options: UpdateOption,
         params: list,
-    ) -> str:
+        r_params: list,
+        date: str,
+    ) -> tuple[str, str]:
         """Create an update query
 
         Args:
@@ -701,18 +800,29 @@ class DbAccess:
         Returns:
             str: Created query
         """
+        status = options.status
+        rollback_status = options.rollback_status
         update_query = ""
-        if applyresult != []:
-            update_query += "applyresult = %s, "
-            params.append(json.dumps(applyresult))
-        if rollbackprocedures != []:
-            update_query += "rollbackprocedures = %s, "
-            params.append(json.dumps(rollbackprocedures))
-        if resumeprocedures != []:
-            update_query += "resumeprocedures = %s, "
-            params.append(json.dumps(resumeprocedures))
-
-        return update_query
+        r_update_query = ""
+        if options.applyresult:
+            update_query += ", result = %s"
+            params.append(json.dumps(options.applyresult))
+        if rollback_status == "" and options.rollbackprocedures:
+            update_query += ", rollbackprocedures = %s"
+            params.append(json.dumps(options.rollbackprocedures))
+        if status == Result.SUSPENDED and options.resumeprocedures:
+            update_query += ", resumeprocedures = %s"
+            params.append(json.dumps(options.resumeprocedures))
+        if rollback_status == Result.SUSPENDED:
+            r_update_query += ", suspendedAt = %s, resumeprocedures = %s"
+            r_params.extend([date, json.dumps(options.resumeprocedures)])
+        elif rollback_status in (Result.COMPLETED, Result.FAILED):
+            r_update_query += ", endedAt = %s"
+            r_params.append(date)
+        if options.rollback_result:
+            r_update_query += ", result = %s"
+            r_params.append(json.dumps(options.rollback_result))
+        return update_query, r_update_query
 
     def _dict_order_norm(self, row) -> dict:
         """Normalize the order and key names of the retrieved apply status
@@ -725,12 +835,9 @@ class DbAccess:
             dict: Normalized apply status
         """
         applystatus = dict(row)
-
         applystatus = {k: v for k, v in applystatus.items() if v is not None}
-
         # Modify the key names for response, reassign values
         applystatus = self._rename_keys_and_replace_values(applystatus)
-
         return applystatus
 
     def _rename_keys_and_replace_values(self, applystatus: dict) -> dict:
@@ -744,23 +851,16 @@ class DbAccess:
         """
         key_value_pairs_to_rename = [
             ("applyid", "applyID"),
-            ("applyresult", "applyResult"),
             ("rollbackprocedures", "rollbackProcedures"),
             ("executerollback", "executeRollback"),
-            ("rollbackstatus", "rollbackStatus"),
-            ("rollbackresult", "rollbackResult"),
             ("resumeprocedures", "resumeProcedures"),
-            ("resumeresult", "resumeResult"),
             ("processid", "processID"),
             ("executioncommand", "executionCommand"),
         ]
-
         date_keys_to_rename = [
             ("startedat", "startedAt"),
             ("endedat", "endedAt"),
             ("canceledat", "canceledAt"),
-            ("rollbackstartedat", "rollbackStartedAt"),
-            ("rollbackendedat", "rollbackEndedAt"),
             ("processstartedat", "processStartedAt"),
             ("suspendedat", "suspendedAt"),
             ("resumedat", "resumedAt"),
@@ -773,9 +873,8 @@ class DbAccess:
             should_rename = (
                 current_value is not None
                 or (key == "executerollback" and current_value is False)
-                or (key == "applyresult" and current_value == [])
+                or (key == "result" and current_value == [])
             )
-
             if should_rename:
                 updated_status[value] = current_value
                 updated_status.pop(key, None)
@@ -788,11 +887,7 @@ class DbAccess:
 
         return updated_status
 
-    def _create_where_query_of_get(
-        self,
-        options: GetAllOption,
-        params: list,
-    ) -> str:
+    def _create_where_query_of_get(self, options: GetAllOption, params: list) -> str:
         """Create where query of get method
 
         Args:
@@ -806,7 +901,6 @@ class DbAccess:
         if options.status is not None:
             where_query += " where status = %s"
             params.append(options.status)
-
         for key, value in options.date_dict.items():
             if where_query == "":
                 where_query += " where "
@@ -820,7 +914,16 @@ class DbAccess:
 
         return where_query
 
-    def _create_query_of_update(self, params: list, options: UpdateOption):
+    def _should_set_ended_at(self, status: str, rollback_status: str) -> bool:
+        return bool(status or rollback_status) and rollback_status != Result.SUSPENDED
+
+    def _append_where_apply_id(self, query: str, query_params: list, apply_id: str) -> str:
+        if query_params:
+            query += " WHERE applyID = %s"
+            query_params.append(apply_id)
+        return query
+
+    def _create_query_of_update(self, params: list, r_params: list, options: UpdateOption):
         """Create query of update method
 
         Args:
@@ -831,67 +934,55 @@ class DbAccess:
             any(str,list): Created query and query parameter
         """
         date = get_str_now()
+        n_status = options.status
+        r_status = options.rollback_status
         update_query = f"UPDATE {TABLE_NAME} SET "
-        if options.status != "":
-            params.append(options.status)
-            update_query += "status = %s, "
-        update_query += self._create_update_query(
-            options.applyresult,
-            options.rollbackprocedures,
-            options.resumeprocedures,
-            params,
-        )
-        if options.status == Result.SUSPENDED or options.rollback_status == Result.SUSPENDED:
-            update_query += "suspendedAt = %s"
-        else:
-            update_query += "endedAt = %s"
-        params.append(date)
-        if options.rollback_status != "":
-            update_query += ", rollbackStatus = %s"
-            params.append(options.rollback_status)
-        if options.rollback_result != []:
-            update_query += ", rollbackResult = %s"
-            params.append(json.dumps(options.rollback_result))
-        if options.rollback_status in [Result.COMPLETED, Result.FAILED]:
-            update_query += ", rollbackEndedAt = %s"
+        r_update_query = f"UPDATE {ROLLBACK_TABLE_NAME} SET "
+
+        if n_status != "":
+            params.append(n_status)
+            update_query += "status = %s"
+        if r_status != "":
+            r_update_query += "status = %s"
+            r_params.append(r_status)
+        update_fragment, r_update_fragment = self._create_update_query(options, params, r_params, date)
+        update_query += update_fragment
+        r_update_query += r_update_fragment
+        if n_status == Result.SUSPENDED:
+            update_query += ", suspendedAt = %s"
             params.append(date)
-        if options.resume_result != []:
-            update_query += ", resumeResult = %s"
-            params.append(json.dumps(options.resume_result))
-        update_query += " WHERE applyID = %s"
-        params.append(options.applyID)
-        return update_query, params
+        elif self._should_set_ended_at(n_status, r_status):
+            update_query += f"{', ' if params else ''}endedAt = %s"
+            params.append(date)
+        update_query = self._append_where_apply_id(update_query, params, options.applyID)
+        r_update_query = self._append_where_apply_id(r_update_query, r_params, options.applyID)
+        return update_query, r_update_query, params, r_params
 
     def _create_query_of_request_cancel(self, status: str, r_status: str):
         """Create query of request cancel method
 
         Args:
             status (str): Status before execution
-            r_status (str): RollbackStatus before execution
+            r_status (str): Rollback Status before execution
 
         Returns:
             any(str,list): Created query and query parameter
         """
-        update_query = f"UPDATE {TABLE_NAME} SET "
+        query = f"UPDATE {TABLE_NAME} SET status = %s WHERE applyID = %s"
         if status == Result.IN_PROGRESS:
             # Status:IN_PROGRESS⇒CANCELING
-            after_status = Result.CANCELING
-            update_query += "status = %s, canceledAt = %s, executeRollback = %s WHERE applyID = %s"
-        elif status == Result.SUSPENDED:
+            return (
+                f"UPDATE {TABLE_NAME} SET status = %s, canceledAt = %s, executeRollback = %s WHERE applyID = %s",
+                [Result.CANCELING],
+            )
+        if status == Result.SUSPENDED:
             # Status:SUSPENDED⇒FAILED
-            after_status = Result.FAILED
-            update_query += "status = %s, canceledAt = %s WHERE applyID = %s"
-        elif r_status == Result.IN_PROGRESS:
+            return f"UPDATE {TABLE_NAME} SET status = %s, canceledAt = %s WHERE applyID = %s", [Result.FAILED]
+        if r_status == Result.IN_PROGRESS:
             # RollbackStatus:IN_PROGRESS⇒FAILED
-            after_status = Result.FAILED
-            update_query += "rollbackStatus = %s WHERE applyID = %s"
-        elif r_status == Result.SUSPENDED:
+            return f"UPDATE {ROLLBACK_TABLE_NAME} SET status = %s WHERE applyID = %s", [Result.FAILED]
+        if r_status == Result.SUSPENDED:
             # RollbackStatus:SUSPENDED⇒FAILED
-            after_status = Result.FAILED
-            update_query += "rollbackStatus = %s, canceledAt = %s WHERE applyID = %s"
-        else:
-            # Status:IN_PROGRESS⇒FAILED
-            after_status = Result.FAILED
-            update_query += "status = %s WHERE applyID = %s"
-        params = [after_status]
-        return update_query, params
+            return f"UPDATE {ROLLBACK_TABLE_NAME} SET status = %s, canceledAt = %s WHERE applyID = %s", [Result.FAILED]
+        # Status:IN_PROGRESS⇒FAILED
+        return query, [Result.FAILED]

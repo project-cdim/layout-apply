@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -70,12 +70,14 @@ def _create_applystatus_resuponse_when_in_canceling(applystatus: dict) -> dict:
         "executeRollback": applystatus.get("executeRollback"),
     }
     if applystatus.get("executeRollback"):
-        if applystatus.get("rollbackResult"):
-            response_dict["rollbackResult"] = applystatus.get("rollbackResult")
         if applystatus.get("rollbackProcedures"):
             response_dict["rollbackProcedures"] = applystatus.get("rollbackProcedures")
-        if applystatus.get("rollbackStartedAt"):
-            response_dict["rollbackStartedAt"] = applystatus.get("rollbackStartedAt")
+        if applystatus.get("rollback", {}).get("startedAt"):
+            response_dict["rollback"] = {"startedAt": applystatus.get("rollback", {}).get("startedAt")}
+        if applystatus.get("rollback", {}).get("procedures"):
+            response_dict["rollback"]["procedures"] = applystatus.get("rollback", {}).get("procedures")
+        if applystatus.get("rollback", {}).get("result"):
+            response_dict["rollback"]["result"] = applystatus.get("rollback", {}).get("result")
     return _create_applystatus_response_with_common_parameters(applystatus, response_dict)
 
 
@@ -106,12 +108,10 @@ def _create_applystatus_response_with_common_parameters(applystatus: dict, respo
     Returns:
         dict: get_applystatus response
     """
-    if applystatus.get("applyResult"):
-        response_dict["applyResult"] = applystatus.get("applyResult")
+    if applystatus.get("result"):
+        response_dict["result"] = applystatus.get("result")
     if applystatus.get("resumeProcedures"):
         response_dict["resumeProcedures"] = applystatus.get("resumeProcedures")
-    if applystatus.get("resumeResult"):
-        response_dict["resumeResult"] = applystatus.get("resumeResult")
     if applystatus.get("resumedAt"):
         response_dict["resumedAt"] = applystatus.get("resumedAt")
     if applystatus.get("procedures"):

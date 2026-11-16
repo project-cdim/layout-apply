@@ -1,4 +1,4 @@
-# Copyright (C) 2025-2026 NEC Corporation.
+# Copyright (C) 2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -91,7 +91,7 @@ class TestMigrationClient:
         uri = config.migration_procedure.get("uri")
 
         httpserver.expect_request(
-            re.compile(f"\/{uri}\/migration-procedures"), method="POST", json=get_migration_layout
+            re.compile(f"/{uri}/migration-procedures"), method="POST", json=get_migration_layout
         ).respond_with_response(Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200))
 
         code, body = api.execute()
@@ -118,7 +118,7 @@ class TestMigrationClient:
             "message": "desiredLayout is a required property.",
         }
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/migration-procedures"), method="POST").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/migration-procedures"), method="POST").respond_with_response(
             Response(
                 bytes(json.dumps(api_err_msg), encoding="utf-8"),
                 status=500,
@@ -201,7 +201,7 @@ class TestMigrationClient:
 
         uri = config.configuration_manager.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/nodes"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/nodes"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(CONF_NODES_API_RESP_DATA), encoding="utf-8"),
                 status=200,
@@ -226,7 +226,7 @@ class TestMigrationClient:
             "nodes": [],
         }
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/nodes"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/nodes"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(conf_empty_nodes), encoding="utf-8"),
                 status=200,
@@ -486,7 +486,7 @@ class TestMigrationClient:
 
         uri = config.configuration_manager.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/nodes"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/nodes"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(resp_data), encoding="utf-8"),
                 status=200,
@@ -517,7 +517,7 @@ class TestMigrationClient:
             "message": "Failed to access to DB",
         }
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/nodes"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/nodes"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(api_err_msg), encoding="utf-8"),
                 status=500,
@@ -596,7 +596,7 @@ class TestMigrationClient:
 
         uri = config.configuration_manager.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/resources/available"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/resources/available"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(GET_AVAILABLE_RESOURCES_API_RESP), encoding="utf-8"),
                 status=200,
@@ -617,7 +617,7 @@ class TestMigrationClient:
 
         uri = config.configuration_manager.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/resources/available"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/resources/available"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(GET_AVAILABLE_RESOURCES_API_RESP_MULTI), encoding="utf-8"),
                 status=200,
@@ -642,7 +642,7 @@ class TestMigrationClient:
             "resources": [],
         }
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/resources/available"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/resources/available"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(conf_empty_nodes), encoding="utf-8"),
                 status=200,
@@ -875,7 +875,7 @@ class TestMigrationClient:
 
         uri = config.configuration_manager.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/resources/available"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/resources/available"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(resp_data), encoding="utf-8"),
                 status=200,
@@ -907,7 +907,7 @@ class TestMigrationClient:
             "message": "Failed to access to DB",
         }
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/resources/available"), method="GET").respond_with_response(
+        httpserver.expect_request(re.compile(f"/{uri}/resources/available"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(api_err_msg), encoding="utf-8"),
                 status=500,

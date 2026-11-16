@@ -4,10 +4,13 @@ layout_apply:
  port: 8003
  request:
   max_workers: 2
+ db_update_timing:
+  count: 10 
+  time: 3
 db:
  dbname: ApplyStatusDB
  user: user01
- host: localhost
+ host: layout-apply-db
  port: 5432
 get_information:
  host: localhost
@@ -16,19 +19,19 @@ get_information:
  specs:
   poweroff:
    polling:
-    count: 15
-    interval: 6
+    count: 8
+    interval: 30
   connect:
    polling:
-    count: 15
-    interval: 6
+    count: 8
+    interval: 30
   disconnect:
    polling:
-    count: 15
-    interval: 6
-  timeout: 15
+    count: 8
+    interval: 30
+  timeout: 60
 workflow_manager:
- host: 0.0.0.0
+ host: localhost
  port: 8008
  uri: cdim/api/v1
  extended-procedure:
@@ -49,71 +52,71 @@ hardware_control:
    targets:
     - status_code: 503
       code: ER005BAS001
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
     - status_code: 503
       code: ER005BAS002
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
    default:
-    interval: 2
-    max_count: 2
-  timeout: 30
+    interval: 5
+    max_count: 5
+  timeout: 60
  connect:
   retry:
    targets:
     - status_code: 503
       code: ER005BAS001
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
     - status_code: 503
       code: ER005BAS002
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
    default:
-    interval: 2
-    max_count: 2
-  timeout: 30
+    interval: 5
+    max_count: 5
+  timeout: 60
  poweroff:
   retry:
    targets:
     - status_code: 503
       code: ER005BAS001
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
     - status_code: 503
       code: ER005BAS002
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
    default:
-    interval: 2
-    max_count: 2
-  timeout: 30
+    interval: 5
+    max_count: 5
+  timeout: 60
  poweron:
   retry:
    targets:
     - status_code: 503
       code: ER005BAS001
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
     - status_code: 503
       code: ER005BAS002
-      interval: 2
-      max_count: 2
+      interval: 5
+      max_count: 5
    default:
-    interval: 2
-    max_count: 2
-  timeout: 30
+    interval: 5
+    max_count: 5
+  timeout: 60
  isosboot:
   polling:
-   count: 15
-   interval: 6
+   count: 8
+   interval: 30
    skip:
     - status_code: 400
       code: EF003BAS010
   request:
-   timeout: 2
-  timeout: 30
+   timeout: 30
+  timeout: 60
 migration_procedure_generator:
  host: localhost
  port: 48889
@@ -126,10 +129,12 @@ configuration_manager:
  timeout: 30
 server_connection:
  retry:
-  interval: 3
-  max_count: 5
+  interval: 2
+  max_count: 4
 message_broker:
  host: localhost
  port: 3500
  pubsub: layout_apply_apply
- topic: layout_apply_apply.completed
+ topic: layout_apply.apply.completed
+features:
+ workflow_manager: true
