@@ -14,12 +14,17 @@
 """API-related packages"""
 
 import json
+import logging
+import os
+import sys
+from datetime import datetime
 from typing import Any
 
 import requests
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from layoutapply.cdimlogger import Logger
+from layoutapply.common.logger import Logger
+from layoutapply.custom_exceptions import InitializeLogSubProcessError
 
 
 class Singleton(object):
@@ -47,7 +52,7 @@ class BaseApiClient:
         """Constructor"""
         self.session = Session().session
         self.conn_retry_interval = conn_retry_interval
-        self.conn_retry_max_count = conn_retry_max_count
+        self.conn_retry_max_count = conn_retry_max_count + 1
         self.logger = logger
 
     def _get(
@@ -222,3 +227,33 @@ class BaseApiClient:
             method (str): Run method
         """
         self.logger.debug(f"retry:{attempt.retry_state.attempt_number-1}, URL:{url}, params:{params}, method:{method}")
+
+
+class AbstractAPIBase(BaseApiClient):
+    """class of AbstractAPIBase"""
+
+    def __init__(self, logger_args, conn_retry_interval: int = 0, conn_retry_max_count: int = 0):
+        self.logger_args = logger_args
+        self.logger = None
+        self.tmp_log_handler = None
+        self.tmp_logger_name = None
+        super().__init__(self.logger, conn_retry_interval, conn_retry_max_count)
+
+    def _set_logger(self):
+        """Set up Logger.
+        If Logger cannot be initialized for any reason during startup,
+        set it to output log content to standard output.
+        """
+        try:
+            self.logger = Logger(self.logger_args)
+        except Exception as error:  # pylint: disable=W0703
+            print(
+                f"[E40009]{InitializeLogSubProcessError(str(error)).message}",
+                file=sys.stderr,
+            )
+            self.tmp_log_handler = logging.StreamHandler(stream=sys.stdout)
+            self.tmp_log_handler.setLevel(logging.DEBUG)
+            self.tmp_logger_name = str(os.getpid()) + datetime.now().strftime("%Y%m%d%H%M%S%f")
+            self.logger = logging.getLogger(self.tmp_logger_name)
+            self.logger.setLevel(logging.DEBUG)
+            self.logger.addHandler(self.tmp_log_handler)

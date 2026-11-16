@@ -13,10 +13,11 @@
 #  under the License.
 """Test of main routine"""
 
+import io
+import logging.config
 import re
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import asdict
-from logging import ERROR
 from time import sleep
 from uuid import uuid4
 
@@ -26,7 +27,7 @@ from psycopg2.extras import DictCursor
 from pytest_httpserver import HTTPServer
 from werkzeug import Request, Response
 
-from layoutapply.cdimlogger import Logger
+from layoutapply.common.logger import Logger
 from layoutapply.const import Action, IdParameter, Operation, Result
 from layoutapply.data import Details, Procedure, details_dict_factory, get_procedure_list
 from layoutapply.db import DbAccess
@@ -47,9 +48,17 @@ from layoutapply.main import (
     _update_layoutapply,
     run,
 )
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 from layoutapply.util import create_randomname
-from tests.layoutapply.conftest import DEVICE_INFO_URL, OPERATION_URL, OS_BOOT_URL, POWER_OPERATION_URL
+from tests.layoutapply.conftest import (
+    DEVICE_INFO_URL,
+    EXTENDED_PROCEDURE_URI,
+    OPERATION_URL,
+    OS_BOOT_URL,
+    POWER_OPERATION_URL,
+    WORKFLOW_MANAGER_HOST,
+    WORKFLOW_MANAGER_PORT,
+)
 from tests.layoutapply.test_data import sql
 from tests.layoutapply.test_data.procedure import multi_pattern, single_pattern, single_pattern_cancel
 
@@ -61,17 +70,20 @@ CHANGE_CANCEL_SQL = "UPDATE applystatus SET status='CANCELING', canceledat='2023
 class TestMain:
 
     @pytest.mark.usefixtures("hardwaremgr_fixture")
-    def test_run_status_completed_when_single_migration_step(
-        self,
-        init_db_instance,
-        mocker,
-    ):
+    def test_run_status_completed_when_single_migration_step(self, init_db_instance, mocker, caplog):
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
+
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
         init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
 
         # act
         for pattern in single_pattern:
@@ -156,7 +168,9 @@ class TestMain:
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+        assert "Published message to topic " in caplog.text
+
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_run_status_completed_when_multiple_migration_steps(
         self,
         init_db_instance,
@@ -169,6 +183,8 @@ class TestMain:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
         init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
+        config.workflow_manager["host"] = "localhost"
 
         # act
         for pattern in multi_pattern:
@@ -178,6 +194,9 @@ class TestMain:
                 cursor.execute(query=SELECT_SQL, vars=[applyid])
                 init_db_instance.commit()
                 row = cursor.fetchone()
+                cursor.execute("SELECT * FROM applystatus WHERE applyid = %s", [applyid])
+                full_row = cursor.fetchone()
+
             if row.get("status") == "IN_PROGRESS":
                 assert row.get("status") == "IN_PROGRESS"
                 for i in range(15):
@@ -261,7 +280,29 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+                    case "start":
+                        assert re.fullmatch(
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            detail["uri"],
+                        )
+                        assert "POST" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 202 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "stop":
+                        assert re.fullmatch(
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            detail["uri"],
+                        )
+                        assert "POST" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 202 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_run_status_completed_when_multiple_migration_steps_setting_valid_max_workers(
         self,
         init_db_instance,
@@ -274,7 +315,9 @@ class TestMain:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
         init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         del config.layout_apply["request"]
+        config.workflow_manager["host"] = "localhost"
 
         # act
         for pattern in multi_pattern:
@@ -367,7 +410,29 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+                    case "start":
+                        assert re.fullmatch(
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            detail["uri"],
+                        )
+                        assert "POST" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 202 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "stop":
+                        assert re.fullmatch(
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            detail["uri"],
+                        )
+                        assert "POST" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 202 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_run_status_completed_when_multiple_migration_steps_setting_max_max_workers(
         self,
         init_db_instance,
@@ -380,7 +445,9 @@ class TestMain:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
         init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         config.layout_apply["request"] = {"max_workers": 128}
+        config.workflow_manager["host"] = "localhost"
 
         # act
         for pattern in multi_pattern:
@@ -473,7 +540,7 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_run_status_completed_when_multiple_migration_steps_setting_min_max_workers(
         self,
         init_db_instance,
@@ -486,7 +553,9 @@ class TestMain:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
         init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         config.layout_apply["request"] = {"max_workers": 1}
+        config.workflow_manager["host"] = "localhost"
 
         # act
         for pattern in multi_pattern:
@@ -579,14 +648,42 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
+                    case "start":
+                        assert re.fullmatch(
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            detail["uri"],
+                        )
+                        assert "POST" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 202 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
+                    case "stop":
+                        assert re.fullmatch(
+                            f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                            detail["uri"],
+                        )
+                        assert "POST" == detail["method"]
+                        assert "queryParameter" not in detail
+                        assert 202 == detail["statusCode"]
+                        assert detail["startedAt"] is not None
+                        assert detail["endedAt"] is not None
+
     @pytest.mark.usefixtures("hardwaremgr_error_fixture")
-    def test_run_status_failed_when_failed_single_migration_step(self, init_db_instance, mocker):
+    def test_run_status_failed_when_failed_single_migration_step(self, init_db_instance, mocker, caplog):
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
             init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
 
         # act
         for pattern in single_pattern:
@@ -687,15 +784,22 @@ class TestMain:
                             assert detail["startedAt"] is not None
                             assert detail["endedAt"] is not None
 
-    @pytest.mark.usefixtures("hardwaremgr_error_fixture")
-    def test_run_status_failed_when_failed_multiple_migration_steps(self, init_db_instance, mocker):
+        assert "Published message to topic " in caplog.text
+
+    @pytest.mark.usefixtures("hardwaremgr_error_fixture", "extended_procedure_error_fixture")
+    def test_run_status_failed_when_failed_multiple_migration_steps(self, init_db_instance, mocker, caplog):
         # arrange
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql_1, vars=[applyid])
             init_db_instance.commit()
         config = LayoutApplyConfig()
-
+        config.load_log_configs()
         # act
         for pattern in multi_pattern:
             procedures = pattern[0]
@@ -802,6 +906,34 @@ class TestMain:
                             } == detail["responseBody"]
                             assert detail["startedAt"] is not None
                             assert detail["endedAt"] is not None
+                        case "start":
+                            assert re.fullmatch(
+                                f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                                detail["uri"],
+                            )
+                            assert "POST" == detail["method"]
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                            assert detail["startedAt"] is not None
+                            assert detail["endedAt"] is not None
+                        case "stop":
+                            assert re.fullmatch(
+                                f"http:\/\/{WORKFLOW_MANAGER_HOST}:{WORKFLOW_MANAGER_PORT}\/{uri}\/{EXTENDED_PROCEDURE_URI}",
+                                detail["uri"],
+                            )
+                            assert "POST" == detail["method"]
+                            assert "queryParameter" not in detail
+                            assert 500 == detail["statusCode"]
+                            assert {
+                                "code": "xxxx",
+                                "message": "Internal Server Error.",
+                            } == detail["responseBody"]
+                            assert detail["startedAt"] is not None
+                            assert detail["endedAt"] is not None
                 else:
                     assert "SKIPPED" == detail["status"]
                     assert "requestBody" not in detail
@@ -813,14 +945,19 @@ class TestMain:
                     assert "startedAt" not in detail
                     assert "endedAt" not in detail
 
-    def test_run_status_canceled_when_true_cancel_flag_before_execution(
-        self,
-        init_db_instance,
-        mocker,
-    ):
+        assert "Published message to topic " in caplog.text
+
+    def test_run_status_canceled_when_true_cancel_flag_before_execution(self, init_db_instance, mocker, caplog):
         """"""
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
+
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
 
         # act
         for pattern in single_pattern_cancel:
@@ -865,6 +1002,7 @@ class TestMain:
                 assert "responseBody" not in detail
                 assert "startedAt" not in detail
                 assert "endedAt" not in detail
+        assert "Published message to topic " in caplog.text
 
     def test_run_status_canceled_when_true_cancel_flag_on_first_api_execution(
         self,
@@ -904,6 +1042,20 @@ class TestMain:
                         "targetDeviceID": str(uuid4()),
                         "dependencies": [3],
                     },
+                    {
+                        "operationID": 5,
+                        "operation": "start",
+                        "targetCPUID": str(uuid4()),
+                        "targetServiceID": str(uuid4()),
+                        "dependencies": [4],
+                    },
+                    {
+                        "operationID": 6,
+                        "operation": "shutdown",
+                        "targetCPUID": str(uuid4()),
+                        "targetServiceID": str(uuid4()),
+                        "dependencies": [5],
+                    },
                 ],
                 "applyID": "234567890e",
             },
@@ -935,11 +1087,26 @@ class TestMain:
                         "targetDeviceID": str(uuid4()),
                         "dependencies": [3],
                     },
+                    {
+                        "operationID": 5,
+                        "operation": "start",
+                        "targetCPUID": str(uuid4()),
+                        "targetServiceID": str(uuid4()),
+                        "dependencies": [4],
+                    },
+                    {
+                        "operationID": 6,
+                        "operation": "shutdown",
+                        "targetCPUID": str(uuid4()),
+                        "targetServiceID": str(uuid4()),
+                        "dependencies": [5],
+                    },
                 ],
                 "applyID": "234567890f",
             },
         ]
         config = LayoutApplyConfig()
+        config.load_log_configs()
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
 
@@ -1003,13 +1170,20 @@ class TestMain:
             rollback_proc_list = row.get("rollbackprocedures")
             for r_proc in rollback_proc_list:
                 assert "operationID" in r_proc
-                assert "targetDeviceID" in r_proc
                 assert "dependencies" in r_proc
                 assert "operation" in r_proc
                 if r_proc["operation"] in ("shutdown", "boot"):
                     assert "targetCPUID" not in r_proc
-                else:
+                    assert "targetServiceID" not in r_proc
+                    assert "targetDeviceID" in r_proc
+                if r_proc["operation"] in ("connect", "disconnect"):
+                    assert "targetDeviceID" in r_proc
                     assert "targetCPUID" in r_proc
+                    assert "targetServiceID" not in r_proc
+                if r_proc["operation"] in ("start", "stop"):
+                    assert "targetDeviceID" not in r_proc
+                    assert "targetCPUID" in r_proc
+                    assert "targetServiceID" in r_proc
             assert details is not None
             assert len(details) == len(procedures["procedures"])
 
@@ -1113,6 +1287,7 @@ class TestMain:
             },
         ]
         config = LayoutApplyConfig()
+        config.load_log_configs()
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
 
@@ -1233,6 +1408,7 @@ class TestMain:
             },
         ]
         config = LayoutApplyConfig()
+        config.load_log_configs()
 
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")
@@ -1537,14 +1713,16 @@ class TestMain:
     def test_create_task_create_task(self):
         with ProcessPoolExecutor() as executor:
             config = LayoutApplyConfig()
+            config.workflow_manager["timeout"] = 3
             # specified type, a task (Future class) is generated.
+            applyid = create_randomname(IdParameter.LENGTH)
             procedure = Procedure(
                 operationID=1,
                 targetDeviceID=uuid4(),
                 operation=Operation.CONNECT,
                 dependencies=[1],
             )
-            assert isinstance(_create_task(procedure, executor, config), Future)
+            assert isinstance(_create_task(procedure, executor, config, applyid), Future)
 
             procedure = Procedure(
                 operationID=1,
@@ -1552,7 +1730,7 @@ class TestMain:
                 operation=Operation.DISCONNECT,
                 dependencies=[1],
             )
-            assert isinstance(_create_task(procedure, executor, config), Future)
+            assert isinstance(_create_task(procedure, executor, config, applyid), Future)
 
             procedure = Procedure(
                 operationID=1,
@@ -1560,7 +1738,7 @@ class TestMain:
                 operation=Operation.POWERON,
                 dependencies=[1],
             )
-            assert isinstance(_create_task(procedure, executor, config), Future)
+            assert isinstance(_create_task(procedure, executor, config, applyid), Future)
 
             procedure = Procedure(
                 operationID=1,
@@ -1568,7 +1746,25 @@ class TestMain:
                 operation=Operation.POWEROFF,
                 dependencies=[1],
             )
-            assert isinstance(_create_task(procedure, executor, config), Future)
+            assert isinstance(_create_task(procedure, executor, config, applyid), Future)
+
+            procedure = Procedure(
+                operationID=1,
+                targetCPUID=uuid4(),
+                targetServiceID=uuid4(),
+                operation=Operation.START,
+                dependencies=[1],
+            )
+            assert isinstance(_create_task(procedure, executor, config, applyid), Future)
+
+            procedure = Procedure(
+                operationID=1,
+                targetCPUID=uuid4(),
+                targetServiceID=uuid4(),
+                operation=Operation.STOP,
+                dependencies=[1],
+            )
+            assert isinstance(_create_task(procedure, executor, config, applyid), Future)
 
             # error is raised in the case of an unknown operation.
             with pytest.raises(Exception):
@@ -1578,7 +1774,7 @@ class TestMain:
                     operation="dummy",
                     dependencies=[1],
                 )
-                assert isinstance(_create_task(procedure, executor, config), Future)
+                assert isinstance(_create_task(procedure, executor, config, applyid), Future)
 
     @pytest.mark.parametrize(
         "procedure, expected_operation",
@@ -1620,6 +1816,26 @@ class TestMain:
                     "dependencies": [],
                 },
                 Operation.POWERON,
+            ),
+            (
+                {
+                    "operationID": 1,
+                    "operation": "start",
+                    "targetCPUID": str(uuid4()),
+                    "targetServiceID": str(uuid4()),
+                    "dependencies": [],
+                },
+                Operation.STOP,
+            ),
+            (
+                {
+                    "operationID": 1,
+                    "operation": "stop",
+                    "targetCPUID": str(uuid4()),
+                    "targetServiceID": str(uuid4()),
+                    "dependencies": [],
+                },
+                Operation.START,
             ),
             (
                 # unexpected string is not converted
@@ -3259,6 +3475,7 @@ class TestMain:
     ):
         # arrange
         config = LayoutApplyConfig()
+        config.load_log_configs()
         mock_cursor = mocker.MagicMock()
         # mock_cursor.execute.side_effect = [psycopg2.ProgrammingError]
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
@@ -3287,7 +3504,6 @@ class TestMain:
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
         # arrange
         base_procedures = {
@@ -3330,7 +3546,8 @@ class TestMain:
         ]
         origin_proc_list: list[Procedure] = get_procedure_list(base_procedures)
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        config.load_log_configs()
+        logger = Logger(config.log_config)
         database = DbAccess(logger)
 
         uri = config.hardware_control.get("uri")
@@ -3388,7 +3605,6 @@ class TestMain:
         self,
         httpserver: HTTPServer,
         init_db_instance,
-        mocker,
     ):
         # Data adjustment before testing.
         cursor = init_db_instance.cursor(cursor_factory=DictCursor)
@@ -3442,7 +3658,8 @@ class TestMain:
         ]
         origin_proc_list: list[Procedure] = get_procedure_list(base_procedures)
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        config.load_log_configs()
+        logger = Logger(config.log_config)
         database = DbAccess(logger)
 
         uri = config.hardware_control.get("uri")
@@ -3498,14 +3715,23 @@ class TestMain:
     @pytest.mark.usefixtures("hardwaremgr_fixture")
     def test_cancel_run_status_completed_when_single_migration_step(
         self,
+        get_db_instance,
+        init_db_instance,
     ):
         # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+        init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         # act
         for pattern in single_pattern:
             procedures = pattern[0]
 
-            executed_list, _ = _cancel_run(procedures, config, Logger(**config.logger_args))
+            executed_list, _ = _cancel_run(
+                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
+            )
             applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
             # assert
@@ -3575,16 +3801,27 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_cancel_run_status_completed_when_multiple_migration_steps(
         self,
+        get_db_instance,
+        init_db_instance,
     ):
         # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+        init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
+        config.workflow_manager["host"] = "localhost"
+
         # act
         for pattern in multi_pattern:
             procedures = pattern[0]
-            executed_list, _ = _cancel_run(procedures, config, Logger(**config.logger_args))
+            executed_list, _ = _cancel_run(
+                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
+            )
             applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
             # assert
@@ -3658,17 +3895,27 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
-    @pytest.mark.usefixtures("hardwaremgr_fixture")
+    @pytest.mark.usefixtures("hardwaremgr_fixture", "extended_procedure_fixture")
     def test_cancel_run_status_completed_when_multiple_migration_steps_setting_valid_max_workers(
         self,
+        get_db_instance,
+        init_db_instance,
     ):
         # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+        init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         del config.layout_apply["request"]
+        config.workflow_manager["host"] = "localhost"
         # act
         for pattern in multi_pattern:
             procedures = pattern[0]
-            executed_list, _ = _cancel_run(procedures, config, Logger(**config.logger_args))
+            executed_list, _ = _cancel_run(
+                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
+            )
             applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
             # assert
@@ -3742,9 +3989,16 @@ class TestMain:
                         assert detail["startedAt"] is not None
                         assert detail["endedAt"] is not None
 
-    def test_cancel_run_status_failed_when_migration_step_failed(self, httpserver: HTTPServer):
+    def test_cancel_run_status_failed_when_migration_step_failed(
+        self, get_db_instance, init_db_instance, httpserver: HTTPServer
+    ):
         # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+        init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         uri = config.hardware_control.get("uri")
 
         err_msg = {"code": "xxxx", "message": "Internal Server Error."}
@@ -3771,7 +4025,9 @@ class TestMain:
         # act
         for pattern in single_pattern:
             procedures = pattern[0]
-            executed_list, _ = _cancel_run(procedures, config, Logger(**config.logger_args))
+            executed_list, _ = _cancel_run(
+                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
+            )
             applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
             # assert
@@ -3797,13 +4053,22 @@ class TestMain:
     @pytest.mark.usefixtures("hardwaremgr_error_fixture")
     def test_cancel_run_status_failed_when_failed_single_migration_step(
         self,
+        get_db_instance,
+        init_db_instance,
     ):
         # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+        init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         # act
         for pattern in single_pattern:
             procedures = pattern[0]
-            executed_list, _ = _cancel_run(procedures, config, Logger(**config.logger_args))
+            executed_list, _ = _cancel_run(
+                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
+            )
             applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
             # assert
@@ -3889,13 +4154,22 @@ class TestMain:
     @pytest.mark.usefixtures("hardwaremgr_error_fixture")
     def test_cancel_run_status_failed_when_failed_multiple_migration_steps(
         self,
+        get_db_instance,
+        init_db_instance,
     ):
         # arrange
+        applyid = create_randomname(IdParameter.LENGTH)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=sql.get_list_insert_sql_2, vars=[applyid])
+        init_db_instance.commit()
         config = LayoutApplyConfig()
+        config.load_log_configs()
         # act
         for pattern in multi_pattern:
             procedures = pattern[0]
-            executed_list, _ = _cancel_run(procedures, config, Logger(**config.logger_args))
+            executed_list, _ = _cancel_run(
+                applyid, procedures, get_db_instance, config, Logger(config.log_config), Action.REQUEST
+            )
             applyresult = [asdict(i, dict_factory=details_dict_factory) for i in executed_list]
 
             # assert
@@ -4054,7 +4328,8 @@ class TestMain:
         ]
         origin_proc_list: list[Procedure] = get_procedure_list(base_procedures)
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        config.load_log_configs()
+        logger = Logger(config.log_config)
         database = DbAccess(logger)
 
         uri = config.hardware_control.get("uri")
@@ -4164,7 +4439,8 @@ class TestMain:
         ]
         origin_proc_list: list[Procedure] = get_procedure_list(base_procedures)
         config = LayoutApplyConfig()
-        logger = Logger(**config.logger_args)
+        config.load_log_configs()
+        logger = Logger(config.log_config)
         database = DbAccess(logger)
 
         uri = config.hardware_control.get("uri")
@@ -4219,6 +4495,12 @@ class TestMain:
         self, httpserver: HTTPServer, init_db_instance, mocker, caplog
     ):
         """"""
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         # arrange
         param = {
             "procedures": [
@@ -4231,8 +4513,9 @@ class TestMain:
             ],
             "applyID": "234567890e",
         }
-        caplog.set_level(ERROR)
+
         config = LayoutApplyConfig()
+        config.load_log_configs()
 
         uri = config.hardware_control.get("uri")
         get_information_uri = config.get_information.get("uri")

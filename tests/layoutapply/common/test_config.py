@@ -27,7 +27,7 @@ class DummyConig(BaseConfig):
             file_name (str): The file name of the configuration file.
         """
 
-        super().__init__("tests.layoutapply.common", "test_config.ini")
+        super().__init__("tests.layoutapply.common", "test_config.yaml")
 
     @property
     def list_config(self):

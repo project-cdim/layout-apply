@@ -22,14 +22,14 @@ import requests
 from requests.exceptions import ConnectionError, RequestException, Timeout
 
 from layoutapply.custom_exceptions import SecretInfoGetException, SettingFileLoadException
-from layoutapply.setting import LayoutApplyConfig, _convert_log_level
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 
 BASE_CONFIG = {
     "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}},
     "db": {
         "dbname": "layoutapply",
         "user": "user01",
-        "password": "testpw",
+        "password": "P@ssw0rd",
         "host": "localhost",
         "port": 5435,
     },
@@ -59,10 +59,28 @@ BASE_CONFIG = {
             "timeout": 10,
         },
     },
+    "workflow_manager": {
+        "host": "0.0.0.0",
+        "port": 8008,
+        "uri": "cdim/api/v1",
+        "extended-procedure": {
+            "retry": {
+                "default": {
+                    "interval": 5,
+                    "max_count": 5,
+                },
+            },
+            "polling": {
+                "count": 5,
+                "interval": 5,
+            },
+        },
+        "timeout": 30,
+    },
     "hardware_control": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "disconnect": {
             "retry": {
                 "targets": [
@@ -97,363 +115,556 @@ BASE_CONFIG = {
             "timeout": 10,
         },
     },
-    "log": {
-        "logging_level": "INFO",
-        "log_dir": "./",
-        "file": "app_layout_apply.log",
-        "rotation_size": 1000000,
-        "backup_files": 3,
-        "stdout": False,
-    },
     "migration_procedure_generator": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "timeout": 30,
     },
     "configuration_manager": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "timeout": 30,
+    },
+    "message_broker": {
+        "host": "localhost",
+        "port": 3500,
+        "pubsub": "layout_apply_apply",
+        "topic": "layout_apply_apply.completed",
+    },
+}
+
+LOG_BASE_CONFIG = {
+    "version": 1,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)s %(message)s",
+            "datefmt": "%Y/%m/%d %H:%M:%S.%f",
+        }
+    },
+    "handlers": {
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "INFO",
+            "formatter": "standard",
+            "filename": "/var/log/cdim/app_layout_apply.log",
+            "maxBytes": 100000000,
+            "backupCount": 72,
+            "encoding": "utf-8",
+        },
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+            "formatter": "standard",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "root": {
+        "level": "INFO",
+        "handlers": ["file"],
     },
 }
 
 
-class TestLayoutApplyConfig:
+class TestLayoutApplyLogConfig:
     @pytest.mark.parametrize(
-        "update_confg",
+        "update_confg1",
         [
-            # logging_level is correct value
             {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
+                "handlers": {
+                    "file": {
+                        "level": "INFO",
+                    }
                 }
             },
             {
-                "log": {
-                    "logging_level": "ERROR",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
+                "handlers": {
+                    "file": {
+                        "level": "ERROR",
+                    }
                 }
             },
             {
-                "log": {
-                    "logging_level": "WARN",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
+                "handlers": {
+                    "file": {
+                        "level": "WARN",
+                    }
                 }
             },
             {
-                "log": {
-                    "logging_level": "CRITICAL",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
+                "handlers": {
+                    "file": {
+                        "level": "CRITICAL",
+                    }
                 }
             },
             {
-                "log": {
-                    "logging_level": "DEBUG",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # logging_level is no existent
-            {
-                "log": {
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # log_dir is correct value
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # file is correct value
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "a",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # file is no existent
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # rotation_size is valid
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "a",
-                    "rotation_size": 0,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # rotation_size is no existent
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # backup_files is valid
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "a",
-                    "rotation_size": 0,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # backup_files is no existent
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "rotation_size": 1000000,
-                    "stdout": False,
-                }
-            },
-            # stdout
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": True,
-                }
-            },
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
+                "handlers": {
+                    "file": {
+                        "level": "DEBUG",
+                    }
                 }
             },
         ],
     )
-    def test_setting_success_when_log_config_normal(self, mocker, update_confg):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_confg}
+    @pytest.mark.parametrize(
+        "update_confg2",
+        [
+            {
+                "handlers": {
+                    "console": {
+                        "level": "INFO",
+                    },
+                }
+            },
+            {
+                "handlers": {
+                    "console": {
+                        "level": "ERROR",
+                    },
+                }
+            },
+            {
+                "handlers": {
+                    "console": {
+                        "level": "WARN",
+                    },
+                },
+            },
+            {
+                "handlers": {
+                    "console": {
+                        "level": "CRITICAL",
+                    },
+                }
+            },
+            {
+                "handlers": {
+                    "console": {
+                        "level": "DEBUG",
+                    },
+                }
+            },
+        ],
+    )
+    @pytest.mark.parametrize(
+        "update_confg3",
+        [
+            {
+                "root": {
+                    "level": "INFO",
+                },
+            },
+            {
+                "root": {
+                    "level": "ERROR",
+                },
+            },
+            {
+                "root": {
+                    "level": "WARN",
+                },
+            },
+            {
+                "root": {
+                    "level": "DEBUG",
+                },
+            },
+            {
+                "root": {
+                    "level": "CRITICAL",
+                },
+            },
+        ],
+    )
+    def test_setting_success_when_log_config_normal(self, mocker, update_confg1, update_confg2, update_confg3):
+        config = copy.deepcopy(LOG_BASE_CONFIG)
+        config["handlers"]["file"]["level"] = update_confg1["handlers"]["file"]["level"]
+        config["handlers"]["console"]["level"] = update_confg2["handlers"]["console"]["level"]
+        config["root"]["level"] = update_confg3["root"]["level"]
         mocker.patch("yaml.safe_load").return_value = config
-        LayoutApplyConfig().logger_args
+        _ = LayoutApplyLogConfig().log_config
+
+    def test_setting_default_set_when_log_dir_missing(self, mocker):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["filename"] = ""
+        mocker.patch("yaml.safe_load").return_value = base_config
+        _ = LayoutApplyLogConfig().log_config
+
+    def test_setting_default_set_when_log_dir_file_not_found(self, mocker):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["filename"] = "/test/test/test.log"
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(SettingFileLoadException) as exc_info:
+            _ = LayoutApplyLogConfig().log_config
+
+        assert "Directory not found at path" in str(exc_info.value)
 
     @pytest.mark.parametrize(
         "update_confg",
         [
-            # log_dir is no existent
+            # level is type mismatch
             {
-                "log": {
-                    "logging_level": "INFO",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
+                "version": "aaa",
             },
         ],
     )
-    def test_setting_default_set_when_log_dir_missing(self, mocker, update_confg):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
-        if os.path.exists("/var/log/cdim"):
-            assert LayoutApplyConfig().logger_args["log_dir"] == "/var/log/cdim"
-        else:
-            with pytest.raises(SettingFileLoadException):
-                _ = LayoutApplyConfig().logger_args
+    def test_setting_failure_when_invalid_log_version(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["version"] = update_confg["version"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(SettingFileLoadException) as exc_info:
+            _ = LayoutApplyLogConfig().log_config
+
+        assert "'aaa' is not of type 'integer'" in str(exc_info.value)
 
     @pytest.mark.parametrize(
         "update_confg",
         [
-            # log_dir only
+            # level is type mismatch
             {
-                "log": {
-                    "log_dir": "./",
+                "formatters": {
+                    "standard": {
+                        "format": 1,
+                    }
                 }
             },
         ],
     )
-    def test_setting_success_when_log_dir_only_set(self, mocker, update_confg):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
-        LayoutApplyConfig().logger_args
+    def test_setting_failure_when_invalid_log_formatters_standard_format(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["formatters"]["standard"]["format"] = update_confg["formatters"]["standard"]["format"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(SettingFileLoadException) as exc_info:
+            _ = LayoutApplyLogConfig().log_config
+
+        assert "1 is not of type 'string'" in str(exc_info.value)
 
     @pytest.mark.parametrize(
         "update_confg",
         [
-            # log_dir is empty string
+            # level is type mismatch
             {
-                "log": {
-                    "log_dir": "",
+                "formatters": {
+                    "standard": {
+                        "datefmt": 1,
+                    }
                 }
             },
         ],
     )
-    def test_setting_success_when_log_dir_empty(self, mocker, update_confg):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
-        LayoutApplyConfig().logger_args
+    def test_setting_failure_when_invalid_log_formatters_standard_datefmt(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["formatters"]["standard"]["datefmt"] = update_confg["formatters"]["standard"]["datefmt"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(SettingFileLoadException) as exc_info:
+            _ = LayoutApplyLogConfig().log_config
+
+        assert "1 is not of type 'string'" in str(exc_info.value)
 
     @pytest.mark.parametrize(
         "update_confg",
         [
-            # logging_level is unexpected string
+            # level is unexpected string
             {
-                "log": {
-                    "logging_level": "INFORMATION",
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
+                "handlers": {
+                    "file": {
+                        "level": "INFORMATION",
+                    }
                 }
             },
-            # logging_level is type mismatch
+            # level is type mismatch
             {
-                "log": {
-                    "logging_level": 1,
-                    "log_dir": "./",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # log_dir is type mismatch
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": 1,
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # log_dir is no existent
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./unknown/direcotry",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # file is type mismatch
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": True,
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # rotation_size is type mismatch
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "a",
-                    "rotation_size": "0",
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
-            # backup_files is type mismatch
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "file": "a",
-                    "rotation_size": 0,
-                    "backup_files": "3",
-                    "stdout": False,
-                }
-            },
-            # stdout is type mismatch
-            {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "./",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": "4",
+                "handlers": {
+                    "file": {
+                        "level": 1,
+                    }
                 }
             },
         ],
     )
-    def test_setting_failure_when_invalid_log_setting(self, mocker, update_confg):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+    def test_setting_failure_when_invalid_log_handlers_file_level(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["level"] = update_confg["handlers"]["file"]["level"]
+        mocker.patch("yaml.safe_load").return_value = base_config
         with pytest.raises(Exception):
-            LayoutApplyConfig().logger_args
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # filename is type mismatch
+            {
+                "handlers": {
+                    "file": {
+                        "filename": 1,
+                    }
+                }
+            },
+            # filename is no existent
+            {
+                "handlers": {
+                    "file": {
+                        "filename": "./unknown/direcotry",
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_file_filename(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["filename"] = update_confg["handlers"]["file"]["filename"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # formatter is type mismatch
+            {
+                "handlers": {
+                    "file": {
+                        "formatter": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_file_formatter(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["formatter"] = update_confg["handlers"]["file"]["formatter"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # maxBytes is type mismatch
+            {
+                "handlers": {
+                    "file": {
+                        "maxBytes": "1",
+                    }
+                }
+            }
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_file_maxBytes(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["maxBytes"] = update_confg["handlers"]["file"]["maxBytes"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # backupCount is type mismatch
+            {
+                "handlers": {
+                    "file": {
+                        "backupCount": "1",
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_file_backupCount(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["backupCount"] = update_confg["handlers"]["file"]["backupCount"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # encoding is type mismatch
+            {
+                "handlers": {
+                    "file": {
+                        "encoding": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_file_encoding(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["file"]["encoding"] = update_confg["handlers"]["file"]["encoding"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # level is unexpected string
+            {
+                "handlers": {
+                    "console": {
+                        "level": "INFORMATION",
+                    }
+                }
+            },
+            # level is type mismatch
+            {
+                "handlers": {
+                    "console": {
+                        "level": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_console_level(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["console"]["level"] = update_confg["handlers"]["console"]["level"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # level is type mismatch
+            {
+                "handlers": {
+                    "console": {
+                        "class": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_console_class(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["console"]["class"] = update_confg["handlers"]["console"]["class"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # level is unexpected string
+            {
+                "handlers": {
+                    "console": {
+                        "level": "INFORMATION",
+                    }
+                }
+            },
+            # level is type mismatch
+            {
+                "handlers": {
+                    "console": {
+                        "level": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_console_level(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["console"]["level"] = update_confg["handlers"]["console"]["level"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # level is type mismatch
+            {
+                "handlers": {
+                    "console": {
+                        "formatter": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_console_formatter(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["console"]["formatter"] = update_confg["handlers"]["console"]["formatter"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # level is type mismatch
+            {
+                "handlers": {
+                    "console": {
+                        "stream": 1,
+                    }
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_handlers_console_stream(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["handlers"]["console"]["stream"] = update_confg["handlers"]["console"]["stream"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # level is unexpected string
+            {
+                "root": {
+                    "level": "INFORMATION",
+                }
+            },
+            # level is type mismatch
+            {
+                "root": {
+                    "level": 1,
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_root_level(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["root"]["level"] = update_confg["root"]["level"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # handlers is type mismatch
+            {
+                "root": {
+                    "handlers": "INFORMATION",
+                }
+            },
+            # handlers is type mismatch
+            {
+                "root": {
+                    "handlers": 1,
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_log_root_handlers(self, mocker, update_confg):
+        base_config = copy.deepcopy(LOG_BASE_CONFIG)
+        base_config["root"]["handlers"] = update_confg["root"]["handlers"]
+        mocker.patch("yaml.safe_load").return_value = base_config
+        with pytest.raises(Exception):
+            _ = LayoutApplyLogConfig().log_config
+
+
+class TestLayoutApplyConfig:
 
     @pytest.mark.parametrize(
         "update_confg",
@@ -475,7 +686,8 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["layout_apply"]
         config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         LayoutApplyConfig().layout_apply
 
     @pytest.mark.parametrize(
@@ -513,7 +725,7 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["layout_apply"]
         config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().layout_apply
 
@@ -632,7 +844,7 @@ class TestLayoutApplyConfig:
                 "hardware_control": {
                     "host": "127.0.0.1",
                     "port": 8888,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "disconnect": {
                         "retry": {
                             "targets": [
@@ -962,24 +1174,17 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["hardware_control"]
         config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         LayoutApplyConfig().hardware_control
 
     def test_setting_default_set_when_no_retry_setting(self, mocker):
         config = {
-            "log": {
-                "logging_level": "INFO",
-                "log_dir": "./",
-                "file": "app_layout_apply.log",
-                "rotation_size": 1000000,
-                "backup_files": 3,
-                "stdout": False,
-            },
             "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}},
             "db": {
                 "dbname": "layoutapply",
                 "user": "user01",
-                "password": "testpw",
+                "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5435,
             },
@@ -1057,18 +1262,19 @@ class TestLayoutApplyConfig:
             "migration_procedure_generator": {
                 "host": "localhost",
                 "port": 48889,
-                "uri": "dagsw/api/v1",
+                "uri": "cdim/api/v1",
                 "timeout": 30,
             },
             "configuration_manager": {
                 "host": "localhost",
                 "port": 48889,
-                "uri": "dagsw/api/v1",
+                "uri": "cdim/api/v1",
                 "timeout": 30,
             },
         }
         # unset values will default.
         mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("requests.get")
         conf = LayoutApplyConfig().disconnect
         assert conf["retry"]["targets"] == [
             {
@@ -1116,21 +1322,19 @@ class TestLayoutApplyConfig:
 
     def test_setting_default_set_when_no_retry_config(self, mocker):
         config = {
-            "log": {
-                "logging_level": "INFO",
-                "log_dir": "./",
-                "file": "app_layout_apply.log",
-                "rotation_size": 1000000,
-                "backup_files": 3,
-                "stdout": False,
-            },
             "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}},
             "db": {
                 "dbname": "layoutapply",
                 "user": "user01",
-                "password": "testpw",
+                "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5435,
+            },
+            "workflow_manager": {
+                "host": "localhost",
+                "port": 8008,
+                "uri": "cdim/api/v1",
+                "extended-procedure": {"retry": {"default": {}}, "polling": {}},
             },
             "hardware_control": {
                 "host": "localhost",
@@ -1157,23 +1361,89 @@ class TestLayoutApplyConfig:
             "migration_procedure_generator": {
                 "host": "localhost",
                 "port": 48889,
-                "uri": "dagsw/api/v1",
+                "uri": "cdim/api/v1",
                 "timeout": 30,
             },
             "configuration_manager": {
                 "host": "localhost",
                 "port": 48889,
-                "uri": "dagsw/api/v1",
+                "uri": "cdim/api/v1",
                 "timeout": 30,
             },
         }
         # all values will default.
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         conf = LayoutApplyConfig().disconnect
         assert conf["retry"]["targets"] == []
         assert conf["retry"]["default"]["interval"] == 5
         assert conf["retry"]["default"]["max_count"] == 5
         assert conf["timeout"] == 60
+
+    def test_setting_default_set_when_no_polling_config(self, mocker):
+        config = {
+            "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}},
+            "db": {
+                "dbname": "layoutapply",
+                "user": "user01",
+                "password": "P@ssw0rd",
+                "host": "localhost",
+                "port": 5435,
+            },
+            "workflow_manager": {
+                "host": "localhost",
+                "port": 8008,
+                "uri": "cdim/api/v1",
+                "extended-procedure": {
+                    "retry": {"default": {}},
+                    "polling": {},
+                },
+                "timeout": None,
+            },
+            "hardware_control": {
+                "host": "localhost",
+                "port": 8888,
+                "uri": "api/v1",
+                "disconnect": {},
+                "isosboot": {
+                    "polling": {
+                        "count": 5,
+                        "interval": 1,
+                        "targets": [
+                            {
+                                "status_code": 204,
+                            },
+                        ],
+                        "skip": [
+                            {"status_code": 400, "code": "EF003BAS010"},
+                        ],
+                    },
+                    "request": {"timeout": 2},
+                    "timeout": 10,
+                },
+            },
+            "migration_procedure_generator": {
+                "host": "localhost",
+                "port": 48889,
+                "uri": "cdim/api/v1",
+                "timeout": 30,
+            },
+            "configuration_manager": {
+                "host": "localhost",
+                "port": 48889,
+                "uri": "cdim/api/v1",
+                "timeout": 30,
+            },
+        }
+        # all values will default.
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
+        extended_conf = LayoutApplyConfig().workflow_manager
+        assert extended_conf["extended-procedure"]["polling"]["count"] == 60
+        assert extended_conf["extended-procedure"]["polling"]["interval"] == 30
+        assert extended_conf["timeout"] == 60
+        assert extended_conf["extended-procedure"]["retry"]["default"]["interval"] == 5
+        assert extended_conf["extended-procedure"]["retry"]["default"]["max_count"] == 5
 
     @pytest.mark.parametrize(
         "update_confg",
@@ -1806,98 +2076,17 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["hardware_control"]
         config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().hardware_control
 
     def test_setting_default_set_when_invalid_logging_level(self, mocker):
-        config = {
-            "log": {
-                "logging_level": "INFO",
-                "log_dir": "./",
-                "file": "app_layout_apply.log",
-                "rotation_size": 1000000,
-                "backup_files": 3,
-                "stdout": False,
-            },
-            "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}},
-            "db": {
-                "dbname": "layoutapply",
-                "user": "user01",
-                "password": "testpw",
-                "host": "localhost",
-                "port": 5435,
-            },
-            "hardware_control": {
-                "host": "host",
-                "port": 8888,
-                "uri": "api/v1",
-                "timeout": 10,
-                "disconnect": {
-                    "retry": {
-                        "targets": [
-                            {
-                                "status_code": 503,
-                                "code": "ER005BAS001",
-                                "interval": 5,
-                                "max_count": 5,
-                            },
-                        ],
-                        "default": {
-                            "interval": 5,
-                            "max_count": 5,
-                        },
-                    },
-                    "timeout": 10,
-                },
-                "isosboot": {
-                    "polling": {
-                        "count": 5,
-                        "interval": 1,
-                        "targets": [
-                            {
-                                "status_code": 204,
-                            },
-                        ],
-                        "skip": [
-                            {"status_code": 400, "code": "EF003BAS010"},
-                        ],
-                    },
-                    "request": {"timeout": 2},
-                    "timeout": 10,
-                },
-            },
-            "migration_procedure_generator": {
-                "host": "localhost",
-                "port": 48889,
-                "uri": "dagsw/api/v1",
-                "timeout": 30,
-            },
-            "configuration_manager": {
-                "host": "localhost",
-                "port": 48889,
-                "uri": "dagsw/api/v1",
-                "timeout": 30,
-            },
-        }
-        mocker.patch("yaml.safe_load").return_value = config
-        obj = LayoutApplyConfig()
-        obj._config["log"]["logging_level"] = "TRACE"
-        assert obj.logger_args.get("logging_level") == logging.INFO
+        mocker.patch("yaml.safe_load").return_value = LOG_BASE_CONFIG
 
-    @pytest.mark.parametrize(
-        "log_level_str, expected_log_level",
-        [
-            ("DEBUG", logging.DEBUG),
-            ("INFO", logging.INFO),
-            ("WARN", logging.WARN),
-            ("ERROR", logging.ERROR),
-            ("CRITICAL", logging.CRITICAL),
-            ("UNKNOWN", logging.INFO),
-        ],
-    )
-    def test_convert_log_level_success(self, log_level_str, expected_log_level):
-        assert expected_log_level == _convert_log_level(log_level_str)
+        obj = LayoutApplyLogConfig().log_config
+        assert obj["handlers"]["file"]["level"] == "INFO"
+        assert obj["handlers"]["console"]["level"] == "INFO"
+        assert obj["root"]["level"] == "INFO"
 
     @pytest.mark.parametrize(
         "update_confg",
@@ -1907,7 +2096,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": "layoutapply",
                     "user": "user01",
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": "127.0.0.1",
                     "port": 5435,
                 },
@@ -1916,7 +2105,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": "layoutapply",
                     "user": "user01",
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": "localhost",
                     "port": 5435,
                 },
@@ -1926,7 +2115,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": "layoutapply",
                     "user": "user01",
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": "localhost",
                     "port": 9999,
                 },
@@ -1935,11 +2124,11 @@ class TestLayoutApplyConfig:
             {},
         ],
     )
-    def test_setting_success_when_db_config_normal(self, mocker, update_confg):
+    def test_setting_success_when_db_config_normal(self, mocker, update_confg, docker_services):
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["db"]
         config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         LayoutApplyConfig().db_config
 
     @pytest.mark.parametrize(
@@ -1950,7 +2139,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": 0,
                     "user": "user01",
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": "127.0.0.1",
                     "port": 5435,
                 },
@@ -1960,7 +2149,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": "layoutapply",
                     "user": 0,
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": "127.0.0.1",
                     "port": 5435,
                 },
@@ -1980,7 +2169,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": "layoutapply",
                     "user": "user01",
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": 0,
                     "port": 5435,
                 },
@@ -1990,7 +2179,7 @@ class TestLayoutApplyConfig:
                 "db": {
                     "dbname": "layoutapply",
                     "user": "user01",
-                    "password": "testpw",
+                    "password": "P@ssw0rd",
                     "host": "127.0.0.1",
                     "port": "5435",
                 },
@@ -2003,7 +2192,7 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["db"]
         config = {**base_config, **update_confg}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().db_config
 
@@ -2011,7 +2200,7 @@ class TestLayoutApplyConfig:
         update_config = {
             "db": {
                 "dbname": "ApplyStatusDB",
-                "password": "testpw",
+                "password": "P@ssword",
                 "user": "user01",
                 "host": "0.0.0.0",
             }
@@ -2019,7 +2208,7 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["db"]
         config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         mock_connection = mocker.MagicMock()
         mock_connection.content = b'{"port": "XXXX"}'
         mocker.patch("requests.get", return_value=mock_connection)
@@ -2031,7 +2220,7 @@ class TestLayoutApplyConfig:
         update_config = {
             "db": {
                 "dbname": "ApplyStatusDB",
-                "password": "testpw",
+                "password": "P@ssword",
                 "user": "user01",
                 "host": "0.0.0.0",
             }
@@ -2039,7 +2228,7 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["db"]
         config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         mock_connection = mocker.MagicMock()
         mock_connection.content = b"{}"
         mocker.patch("requests.get", return_value=mock_connection)
@@ -2060,7 +2249,7 @@ class TestLayoutApplyConfig:
         base_config = copy.deepcopy(BASE_CONFIG)
         del base_config["db"]
         config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         mocker.patch("requests.get")
         requests.get.side_effect = exc
 
@@ -2207,7 +2396,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["hardware_control"]["isosboot"]
         config["hardware_control"]["isosboot"] = update_confg
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         LayoutApplyConfig().isosboot
 
     @pytest.mark.parametrize(
@@ -2332,7 +2522,7 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["hardware_control"]["isosboot"]
         config["hardware_control"]["isosboot"] = update_confg
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().isosboot
 
@@ -2353,7 +2543,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["hardware_control"]["isosboot"]
         config["hardware_control"]["isosboot"] = update_confg
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         is_os_boot_conf = LayoutApplyConfig().isosboot
         assert is_os_boot_conf.get("polling").get("count") == 8
         assert is_os_boot_conf.get("polling").get("interval") == 30
@@ -2396,7 +2587,8 @@ class TestLayoutApplyConfig:
         del config["get_information"]["specs"][operation]
         del config["get_information"]["specs"]["timeout"]
         config["get_information"]["specs"][operation] = update_confg
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         get_info_conf = LayoutApplyConfig().get_information
         assert get_info_conf["specs"][operation].get("polling").get("count") == 8
         assert get_info_conf["specs"][operation].get("polling").get("interval") == 30
@@ -2419,7 +2611,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["hardware_control"]["isosboot"]
         config["hardware_control"]["isosboot"] = update_confg
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         is_os_boot_conf = LayoutApplyConfig().isosboot
         assert is_os_boot_conf.get("polling").get("count") == 10
         assert is_os_boot_conf.get("polling").get("interval") == 11
@@ -2464,7 +2657,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["get_information"]
         config["get_information"] = update_confg["get_information"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         get_information_conf = LayoutApplyConfig().get_information
         assert get_information_conf.get("host") == "localhost"
         assert get_information_conf.get("port") == 48889
@@ -2540,7 +2734,7 @@ class TestLayoutApplyConfig:
                 "get_information": {
                     "host": "localhost",
                     "port": 48889,
-                    "uri": "dagsw/api/v1",
+                    "uri": "cdim/api/v1",
                     "specs": {
                         "poweroff": {
                             "polling": {
@@ -2744,7 +2938,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["get_information"]
         config["get_information"] = update_confg["get_information"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         LayoutApplyConfig().get_information
 
     @pytest.mark.parametrize(
@@ -2989,7 +3184,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["get_information"]
         config["get_information"] = update_confg["get_information"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         with pytest.raises(Exception):
             LayoutApplyConfig().get_information
 
@@ -3031,7 +3227,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["get_information"]
         config["get_information"] = update_confg["get_information"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         get_information_conf = LayoutApplyConfig().get_information
         specs_conf = get_information_conf.get("specs")
         assert specs_conf.get("poweroff").get("polling").get("count") == 8
@@ -3071,7 +3268,8 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["migration_procedure_generator"]
         config["migration_procedure_generator"] = update_confg["migration_procedure_generator"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         with pytest.raises(Exception):
             LayoutApplyConfig().migration_procedure
 
@@ -3111,7 +3309,7 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["migration_procedure_generator"]
         config["migration_procedure_generator"] = update_confg["migration_procedure_generator"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().migration_procedure
 
@@ -3148,7 +3346,7 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["configuration_manager"]
         config["configuration_manager"] = update_confg["configuration_manager"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().configuration_manager
 
@@ -3188,7 +3386,7 @@ class TestLayoutApplyConfig:
         config = copy.deepcopy(BASE_CONFIG)
         del config["configuration_manager"]
         config["configuration_manager"] = update_confg["configuration_manager"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().configuration_manager
 
@@ -3216,10 +3414,11 @@ class TestLayoutApplyConfig:
     def test_setting_config_default_value_applied_when_server_connection_config(self, mocker, update_config):
         config = copy.deepcopy(BASE_CONFIG)
         config["server_connection"] = update_config["server_connection"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         server_connection_conf = LayoutApplyConfig().server_connection
         assert server_connection_conf.get("retry").get("interval") == 2
-        assert server_connection_conf.get("retry").get("max_count") == 5
+        assert server_connection_conf.get("retry").get("max_count") == 4
 
     @pytest.mark.parametrize(
         "update_config",
@@ -3237,7 +3436,8 @@ class TestLayoutApplyConfig:
     def test_setting_config_update_value_applied_when_server_connection_config(self, mocker, update_config):
         config = copy.deepcopy(BASE_CONFIG)
         config["server_connection"] = update_config["server_connection"]
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
         server_connection_conf = LayoutApplyConfig().server_connection
         assert server_connection_conf.get("retry").get("interval") == 1
         assert server_connection_conf.get("retry").get("max_count") == 2
@@ -3269,7 +3469,7 @@ class TestLayoutApplyConfig:
             },
             # retry.interval over min
             {
-                "server_connection": {"retry": {"interval": 1, "max_count": 0}},
+                "server_connection": {"retry": {"interval": 1, "max_count": -1}},
             },
             # retry.interval over max
             {
@@ -3280,6 +3480,112 @@ class TestLayoutApplyConfig:
     def test_setting_failure_when_invalid_server_connection_config(self, mocker, update_config):
         base_config = copy.deepcopy(BASE_CONFIG)
         config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        with pytest.raises(Exception):
+            LayoutApplyConfig().server_connection
+
+    @pytest.mark.parametrize(
+        "update_config",
+        [
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "port": 3500,
+                    "pubsub": "layout_apply_apply",
+                    "topic": "layout_apply_apply.completed",
+                }
+            }
+        ],
+    )
+    def test_setting_config_update_value_applied_when_message_broker_config(self, mocker, update_config):
+        config = copy.deepcopy(BASE_CONFIG)
+        config["message_broker"] = update_config["message_broker"]
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
+        message_broker_conf = LayoutApplyConfig().message_broker
+        assert message_broker_conf.get("host") == "localhost"
+        assert message_broker_conf.get("port") == 3500
+        assert message_broker_conf.get("pubsub") == "layout_apply_apply"
+        assert message_broker_conf.get("topic") == "layout_apply_apply.completed"
+
+    @pytest.mark.parametrize(
+        "update_config",
+        [
+            # message broker is type mismatch
+            {"message_broker": 1},
+            # host is not found
+            {
+                "message_broker": {
+                    "port": 3500,
+                    "pubsub": "layout_apply_apply",
+                    "topic": "layout_apply_apply.completed",
+                }
+            },
+            # port is not found
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "pubsub": "layout_apply_apply",
+                    "topic": "layout_apply_apply.completed",
+                }
+            },
+            # pubsub is not found
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "port": 3500,
+                    "topic": "layout_apply_apply.completed",
+                }
+            },
+            # topic is not found
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "port": 3500,
+                    "pubsub": "layout_apply_apply",
+                }
+            },
+            # host is type mismatch
+            {
+                "message_broker": {
+                    "host": [1],
+                    "port": 3500,
+                    "pubsub": "layout_apply_apply",
+                    "topic": "layout_apply_apply.completed",
+                }
+            },
+            # port is type mismatch
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "port": [1],
+                    "pubsub": "layout_apply_apply",
+                    "topic": "layout_apply_apply.completed",
+                }
+            },
+            # pubsub is type mismatch
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "port": 3500,
+                    "pubsub": ["layout_apply_apply"],
+                    "topic": "layout_apply_apply.completed",
+                }
+            },
+            # topic is type mismatch
+            {
+                "message_broker": {
+                    "host": "localhost",
+                    "port": 3500,
+                    "pubsub": "layout_apply_apply",
+                    "topic": ["layout_apply_apply.completed"],
+                }
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_message_broker_config(self, mocker, update_config):
+        base_config = copy.deepcopy(BASE_CONFIG)
+        config = {**base_config, **update_config}
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().server_connection

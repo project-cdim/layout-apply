@@ -1,7 +1,4 @@
 ---
-log:
- log_dir: ./
- logging_level: DEBUG
 layout_apply:
  host: 0.0.0.0
  port: 8003
@@ -15,7 +12,7 @@ db:
 get_information:
  host: localhost
  port: 48889
- uri: dagsw/api/v1
+ uri: cdim/api/v1
  specs:
   poweroff:
    polling:
@@ -30,10 +27,23 @@ get_information:
     count: 15
     interval: 6
   timeout: 15
+workflow_manager:
+ host: 0.0.0.0
+ port: 8008
+ uri: cdim/api/v1
+ extended-procedure:
+  retry:
+   default:
+    interval: 5
+    max_count: 5
+  polling:
+   count: 60
+   interval: 30
+ timeout: 60
 hardware_control:
  host: localhost
  port: 48889
- uri: dagsw/api/v1
+ uri: cdim/api/v1
  disconnect:
   retry:
    targets:
@@ -107,10 +117,19 @@ hardware_control:
 migration_procedure_generator:
  host: localhost
  port: 48889
- uri: dagsw/api/v1
+ uri: cdim/api/v1
  timeout: 30
 configuration_manager:
  host: localhost
  port: 48889
- uri: dagsw/api/v1
+ uri: cdim/api/v1
  timeout: 30
+server_connection:
+ retry:
+  interval: 3
+  max_count: 5
+message_broker:
+ host: localhost
+ port: 3500
+ pubsub: layout_apply_apply
+ topic: layout_apply_apply.completed

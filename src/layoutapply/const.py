@@ -97,6 +97,8 @@ class Operation:
     CONNECT = "connect"
     DISCONNECT = "disconnect"
     POWERON = "boot"
+    START = "start"
+    STOP = "stop"
 
 
 @_simple_enum(StrEnum)
@@ -130,6 +132,7 @@ class ApiUri:
     DISCONNECT_API = "http://{}:{}/{}/cpu/{}/aggregations"
     POWERON_API = "http://{}:{}/{}/devices/{}/power"
     ISOSBOOT_API = "http://{}:{}/{}/cpu/{}/is-os-ready"
+    EXTENDED_PROCEDURE_API = "http://{}:{}/{}/extended-procedure"
     # URI for GetDeviceInformationAPI call
     GETDEVICEINFORMATION_API = "http://{}:{}/{}/devices/{}/specs"
     # URI for MigrationProceduresAPI call
@@ -138,7 +141,8 @@ class ApiUri:
     GET_ALLNODES_INFO_API = "http://{}:{}/{}/nodes"
     # URI for GetAvailableResourcesAPI call
     GET_AVAILABLE_RESOURCES_API = "http://{}:{}/{}/resources/available"
-
+    # URI for GetServiceInformationAPI call
+    GET_EXTENDED_PROCEDURE_API = "http://{}:{}/{}/extended-procedure/{}"
 
 @_simple_enum(StrEnum)
 class Result:
@@ -195,6 +199,13 @@ class RequestParameter:
 
     URL = "http://127.0.0.1:3500/v1.0/secrets/cdim-layout-apply/cdim-layout-apply"
     STORE_NAME = "cdim-layout-apply"
+
+
+@_simple_enum(StrEnum)
+class PublishRequestParameter:
+    """Publish Request parameter value"""
+
+    URL = "http://{}:{}/v1.0/publish/{}/{}"
 
 
 @_simple_enum(StrEnum)

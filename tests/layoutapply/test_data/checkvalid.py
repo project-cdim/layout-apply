@@ -19,8 +19,7 @@ without_required_key = [
     # 1.procedure
     # 2.operationID
     # 3.operation
-    # 4.targetDeviceID
-    # 5.dependencies
+    # 4.dependencies
     #########################
     (
         {
@@ -58,18 +57,18 @@ without_required_key = [
             ],
         }
     ),
-    (
-        {
-            "procedures": [
-                {
-                    "operationID": 1,
-                    "operation": "shutdown",
-                    "test": str(uuid4()),
-                    "dependencies": [],
-                }
-            ],
-        }
-    ),
+    # (This test is commented out because targetDeviceID is no longer required.
+    #     {
+    #         "procedures": [
+    #             {
+    #                 "operationID": 1,
+    #                 "operation": "shutdown",
+    #                 "test": str(uuid4()),
+    #                 "dependencies": [],
+    #             }
+    #         ],
+    #     }
+    # ),
     (
         {
             "procedures": [
@@ -115,6 +114,7 @@ invalid_data_type = [
     # 4.targetCPUID
     # 5.targetDeviceID
     # 6.dependencies
+    # 7.targetServiceID
     #########################
     (
         {
@@ -199,12 +199,39 @@ invalid_data_type = [
             ],
         }
     ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "start",
+                    "targetCPUID": str(uuid4()),
+                    "targetServiceID": [],
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "start",
+                    "targetCPUID": str(uuid4()),
+                    "targetServiceID": 1,
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
 ]
 
 invalid_value = [
     #########################
     # 1.targetDeviceID is empty
     # 2.targetCPUID is empty
+    # 3.targetService is empty
     #########################
     (
         {
@@ -226,6 +253,154 @@ invalid_value = [
                     "test": "connect",
                     "targetCPUID": "",
                     "targetDeviceID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "test": "start",
+                    "targetCPUID": str(uuid4()),
+                    "targetServiceID": "",
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+]
+
+any_key_combination = [
+    #########################
+    # 1.operation:connect    CPU ID key does not exist.
+    # 2.operation:connect    Device ID key does not exist
+    # 3.operation:disconnect CPU ID key does not exist.
+    # 4.operation:disconnect Device ID key does not exist
+    # 5.operation:boot       Device ID key does not exist
+    # 6.operation:shutdown   Device ID key does not exist
+    # 7.operation:start      CPU ID key does not exist.
+    # 8.operation:start      Service ID key does not exist
+    # 9.operation:stop       CPU ID key does not exist.
+    # 10.operation:stop      Service ID key does not exist
+    #########################
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "connect",
+                    "targetDeviceID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "connect",
+                    "targetCPUID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "disconnect",
+                    "targetCPUID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "disconnect",
+                    "targetDeviceID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "boot",
+                    "targetCPUID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "shutdown",
+                    "targetServiceID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "start",
+                    "targetServiceID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "start",
+                    "targetCPUID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "stop",
+                    "targetServiceID": str(uuid4()),
+                    "dependencies": [],
+                }
+            ],
+        }
+    ),
+    (
+        {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "stop",
+                    "targetCPUID": str(uuid4()),
                     "dependencies": [],
                 }
             ],
@@ -272,7 +447,7 @@ newLayout_unkown_device = [
                 ]
             }
         }
-    )
+    ),
 ]
 
 newLayout_invalid_data_type = [
@@ -282,6 +457,7 @@ newLayout_invalid_data_type = [
     # 3.device
     # 4.(Device type)
     # 5.deviceIDs
+    # 6.(Device type) pattern
     #########################
     (
         {
@@ -354,6 +530,21 @@ newLayout_invalid_data_type = [
                     {
                         "device": {
                             "cpu": {"deviceIDs": {"deviceID": str(uuid4())}},
+                        }
+                    },
+                ]
+            }
+        }
+    ),
+    (
+        {
+            "desiredLayout": {
+                "nodes": [
+                    {
+                        "device": {
+                            "cpu": {"deviceIDs": [str(uuid4())]},
+                            "networkInterface": {"deviceIDs": [str(uuid4())]},
+                            "network-Interface": {"deviceIDs": [str(uuid4())]},
                         }
                     },
                 ]

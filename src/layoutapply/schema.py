@@ -13,6 +13,71 @@
 #  under the License.
 """jsonschema"""
 
+log_config_schema = {
+    "type": "object",
+    "required": ["version", "formatters", "handlers", "root"],
+    "properties": {
+        "version": {"type": "integer"},
+        "formatters": {
+            "type": "object",
+            "properties": {
+                "standard": {
+                    "type": "object",
+                    "properties": {"format": {"type": "string"}, "datefmt": {"type": "string"}},
+                    "required": ["format", "datefmt"],
+                }
+            },
+            "required": ["standard"],
+        },
+        "handlers": {
+            "type": "object",
+            "properties": {
+                "file": {
+                    "type": "object",
+                    "properties": {
+                        "class": {"type": "string"},
+                        "level": {
+                            "type": "string",
+                            "enum": ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"],
+                        },
+                        "formatter": {"type": "string"},
+                        "filename": {"type": "string"},
+                        "maxBytes": {"type": "integer"},
+                        "backupCount": {"type": "integer"},
+                        "encoding": {"type": "string"},
+                    },
+                    "required": ["class", "formatter", "filename", "maxBytes", "backupCount"],
+                },
+                "console": {
+                    "type": "object",
+                    "properties": {
+                        "class": {"type": "string"},
+                        "level": {
+                            "type": "string",
+                            "enum": ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"],
+                        },
+                        "formatter": {"type": "string"},
+                        "stream": {"type": "string"},
+                    },
+                    "required": ["class", "formatter", "stream"],
+                },
+            },
+            "required": ["file"],
+        },
+        "root": {
+            "type": "object",
+            "properties": {
+                "level": {
+                    "type": "string",
+                    "enum": ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"],
+                },
+                "handlers": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["level", "handlers"],
+        },
+    },
+}
+
 config = {
     # same settings are defined separately and referenced for each hardware control API.
     "$defs": {
@@ -113,37 +178,6 @@ config = {
         "migration_procedure_generator",
     ],
     "properties": {
-        # Log definition
-        "log": {
-            "type": "object",
-            "properties": {
-                # Log level
-                "logging_level": {
-                    "type": "string",
-                    "enum": ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"],
-                },
-                # Log directory
-                "log_dir": {
-                    "type": "string",
-                },
-                # Log file name
-                "file": {
-                    "type": "string",
-                },
-                # Rotation file size
-                "rotation_size": {
-                    "type": "integer",
-                },
-                # Number of log file backups
-                "backup_files": {
-                    "type": "integer",
-                },
-                # If "true" is specified, the log is also output to the standard output.
-                "stdout": {
-                    "type": "boolean",
-                },
-            },
-        },
         # Configuration LayoutApply related settings
         "layout_apply": {
             "type": "object",
@@ -232,6 +266,57 @@ config = {
                             "maximum": 600,
                         },
                     },
+                },
+            },
+        },
+        # Configuration workflow_manager related settings
+        "workflow_manager": {
+            "type": "object",
+            "required": [
+                "host",
+                "port",
+                "uri",
+                "extended-procedure",
+            ],
+            "properties": {
+                # IP/HOST
+                "host": {"type": "string"},
+                # Port
+                "port": {"type": "integer"},
+                # URI
+                "uri": {"type": "string"},
+                "extended-procedure": {
+                    "type": "object",
+                    "required": ["polling", "retry"],
+                    "properties": {
+                        "retry": {
+                            "type": "object",
+                            "required": ["default"],
+                            "properties": {
+                                "default": {
+                                    "type": ["object", "null"],
+                                    "properties": {
+                                        # Retry interval (unit: s, maximum 60s)
+                                        "interval": {"type": ["integer", "null"], "minimum": 0, "maximum": 60},
+                                        # Retry max count (maximum 10)
+                                        "max_count": {"type": ["integer", "null"], "minimum": 1, "maximum": 10},
+                                    },
+                                },
+                            },
+                        },
+                        # Definition regarding polling for extended-procedure API
+                        "polling": {
+                            "type": ["object", "null"],
+                            "properties": {
+                                # Number of polls (minimum 1, maximum 240)
+                                "count": {"type": ["integer", "null"], "minimum": 1, "maximum": 240},
+                                # Polling interval (unit: s, minimum 0s, maximum 240s)
+                                "interval": {"type": ["integer", "null"], "minimum": 0, "maximum": 240},
+                            },
+                        },
+                    },
+                    # Timeout duration(unit: s, maximum 600s)
+                    "timeout": {"type": ["integer", "null"], "minimum": 1, "maximum": 600},
                 },
             },
         },
@@ -378,10 +463,33 @@ config = {
                         },
                         "max_count": {
                             "type": ["integer", "null"],
-                            "minimum": 1,
+                            "minimum": 0,
                             "maximum": 10,
                         },
                     },
+                },
+            },
+        },
+        # message publish settings
+        "message_broker": {
+            "type": "object",
+            "required": ["host", "port", "pubsub", "topic"],
+            "properties": {
+                # IP/HOST
+                "host": {
+                    "type": "string",
+                },
+                # Port
+                "port": {
+                    "type": "integer",
+                },
+                # pubsub
+                "pubsub": {
+                    "type": "string",
+                },
+                # topic
+                "topic": {
+                    "type": "string",
                 },
             },
         },
@@ -400,7 +508,6 @@ procedure = {
                 "required": [
                     "operationID",
                     "operation",
-                    "targetDeviceID",
                     "dependencies",
                 ],
                 "properties": {
@@ -411,10 +518,15 @@ procedure = {
                     # Operation types for migration procedure
                     "operation": {
                         "type": "string",
-                        "enum": ["boot", "shutdown", "connect", "disconnect"],
+                        "enum": ["boot", "shutdown", "connect", "disconnect", "start", "stop"],
                     },
                     # Target CPU device ID
                     "targetCPUID": {
+                        "type": "string",
+                        "minLength": 1,
+                    },
+                    # Target Request instance ID
+                    "targetRequestInstanceID": {
                         "type": "string",
                         "minLength": 1,
                     },
@@ -431,14 +543,31 @@ procedure = {
                         },
                     },
                 },
-                "if": {
-                    "properties": {"operation": {"enum": ["connect", "disconnect"]}},
-                },
-                "then": {"required": ["targetCPUID"]},
+                "allOf": [
+                    {
+                        "if": {
+                            "properties": {"operation": {"enum": ["connect", "disconnect"]}},
+                        },
+                        "then": {"required": ["targetCPUID", "targetDeviceID"]},
+                    },
+                    {
+                        "if": {
+                            "properties": {"operation": {"enum": ["boot", "shutdown"]}},
+                        },
+                        "then": {"required": ["targetDeviceID"]},
+                    },
+                    {
+                        "if": {
+                            "properties": {"operation": {"enum": ["start", "stop"]}},
+                        },
+                        "then": {"required": ["targetCPUID", "targetRequestInstanceID"]},
+                    },
+                ],
             },
         },
     },
 }
+
 
 # ApplyID
 apply_id = {
@@ -576,7 +705,7 @@ desiredLayout = {
                         "type": "object",
                         "additionalProperties": False,
                         "patternProperties": {
-                            "^(.+)$": {
+                            "^[0-9a-zA-Z]+$": {
                                 "type": "object",
                                 "properties": {
                                     "deviceIDs": {
@@ -626,7 +755,10 @@ configmanager_api_resp = {
                                     "required": ["deviceID", "type"],
                                     "properties": {
                                         "deviceID": {"type": "string"},
-                                        "type": {"type": "string"},
+                                        "type": {
+                                            "type": "string",
+                                            "pattern": "^[0-9a-zA-Z]+$",
+                                        },
                                     },
                                 },
                             },
@@ -654,6 +786,7 @@ get_resources_available_api_resp = {
                         "properties": {
                             "type": {
                                 "type": "string",
+                                "pattern": "^[0-9a-zA-Z]+$",
                             },
                             "deviceID": {
                                 "type": "string",
@@ -685,3 +818,14 @@ get_resources_available_api_resp = {
 # Add required items to the DB schema and configure them.
 db_required_item = {"required": ["dbname", "user", "password", "host", "port"]}
 db_config_schema = {**config["properties"]["db"], **db_required_item}
+
+extended_procedure_schema = {
+    "type": "object",
+    "required": ["status"],
+    "properties": {
+        "status": {
+            "type": "string",
+            "enum": ["IN_PROGRESS", "COMPLETED", "FAILED"],
+        },
+    },
+}

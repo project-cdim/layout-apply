@@ -15,28 +15,23 @@
 
 import copy
 import json
-import logging
-import os
-import sys
 import time
 from dataclasses import asdict
-from datetime import datetime
 from http import HTTPMethod, HTTPStatus
 from typing import Any
 
 from jsonschema import ValidationError, validate
 from requests import Response, exceptions
 
-from layoutapply.cdimlogger import Logger
-from layoutapply.common.api import BaseApiClient
+from layoutapply.common.api import AbstractAPIBase
 from layoutapply.common.dateutil import get_str_now
 from layoutapply.const import ApiHeaders, ApiUri, RequestBodyAction, Result
 from layoutapply.custom_exceptions import (  # noqa: E402
     ConnectTimeoutError,
     FailedGetDeviceInfoException,
     FailedRequestError,
-    InitializeLogSubProcessError,
     OsBootFailureException,
+    OSBootMaxRetriesExceededException,
     PowerStateNotChangeException,
     SuspendProcessException,
     UnexpectedRequestError,
@@ -46,7 +41,7 @@ from layoutapply.data import Details, IsOsBoot, Procedure, details_dict_factory
 from layoutapply.schema import device_information as device_information_scheme
 
 
-class HarwareManageAPIBase(BaseApiClient):
+class HarwareManageAPIBase(AbstractAPIBase):
     """Base class of HarwareManageAPI"""
 
     def __init__(
@@ -63,7 +58,7 @@ class HarwareManageAPIBase(BaseApiClient):
             hardware_control_conf (dict): Configuration for hardware control functions
             get_info_conf (dict): Configuration for information retrieval functions
             api_config (dict): Retry settings for each API, etc
-            logger_args (dict): Arguments for GILogger
+            logger_args (dict): Arguments for Logger
         """
         self.host = hardware_control_conf.get("host")
         self.port = hardware_control_conf.get("port")
@@ -83,7 +78,7 @@ class HarwareManageAPIBase(BaseApiClient):
         self.exception_flg = False
         self.is_suspended = False
         self.recent_request_uri = None
-        super().__init__(self.logger, self.conn_retry_interval, self.conn_retry_max_count)
+        super().__init__(self.logger_args, self.conn_retry_interval, self.conn_retry_max_count)
 
     def execute(self, procedure: Procedure) -> Details:
         """Send a request to the API.
@@ -201,25 +196,6 @@ class HarwareManageAPIBase(BaseApiClient):
             NotImplementedError: Raises an exception when not implemented
         """
         raise NotImplementedError()  # pragma: no cover
-
-    def _set_logger(self):
-        """Set up GILogger.
-        If GILogger cannot be initialized for any reason during startup,
-        set it to output log content to standard output.
-        """
-        try:
-            self.logger = Logger(**self.logger_args)
-        except Exception as error:  # pylint: disable=W0703
-            print(
-                f"[E40009]{InitializeLogSubProcessError(str(error)).message}",
-                file=sys.stderr,
-            )
-            self.tmp_log_handler = logging.StreamHandler(stream=sys.stdout)
-            self.tmp_log_handler.setLevel(logging.DEBUG)
-            self.tmp_logger_name = str(os.getpid()) + datetime.now().strftime("%Y%m%d%H%M%S%f")
-            self.logger = logging.getLogger(self.tmp_logger_name)
-            self.logger.setLevel(logging.DEBUG)
-            self.logger.addHandler(self.tmp_log_handler)
 
     def _is_retry_response(self, status_code: int, body: Any) -> dict:
         """Determine if a retry is necessary.
@@ -385,7 +361,7 @@ class PowerOnAPI(HarwareManageAPIBase):
         Args:
             hardware_control_conf (dict): Hardware control function settings
             api_config (dict): Retry settings for each API, etc.
-            logger_args (dict): GILogger argument
+            logger_args (dict): Logger argument
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.is_os_boot_api = IsOSBootAPI(
@@ -474,7 +450,7 @@ class IsOSBootAPI(HarwareManageAPIBase):
         Args:
             hardware_control_conf (dict): Hardware control function settings
             api_config (dict): Retry settings for each API, etc.
-            logger_args (dict): GILogger argument
+            logger_args (dict): Logger argument
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.timeout = self.isosboot_conf.get("timeout")
@@ -533,7 +509,13 @@ class IsOSBootAPI(HarwareManageAPIBase):
 
         # If polling fails up to the limit, output an error log.
         if is_polling:
+            exc = OSBootMaxRetriesExceededException(procedure.targetDeviceID)
             self.logger.error(f"[E40021]{OsBootFailureException().message}", stack_info=False)
+            self.logger.error(f"[E40032]{exc.message}", stack_info=False)
+            body = {
+                "code": "E40032",
+                "message": exc.message,
+            }
         self.is_os_boot_detail.statusCode = code
         try:
             body = json.loads(body)
@@ -566,32 +548,57 @@ class IsOSBootAPI(HarwareManageAPIBase):
                 is_polling = False
                 break
 
-            if code == HTTPStatus.OK and status is False:
-                is_polling = True
-                cnt += 1
-                self.logger.info(
-                    f"""
-                        OS not started. status:[{status}], response[{body}],
-                        polling[count:{cnt}, limit:{self.polling_count}]
-                    """
-                )
-                time.sleep(self.polling_interval)
-            elif code in self.skip_status_codes and body.get("code") in self.skip_codes:
-                self.is_os_boot_detail.code = body.get("code")
-                is_polling = False
-                self.logger.info(
-                    f"""
-                        The device is not a CPU. Skip running OS startup confirmation API.
-                        device id:{procedure.targetDeviceID},status:[{status}],response[{body}]
-                    """
-                )
-                break
-            else:
-                self.is_os_boot_detail.code = body.get("code", "")
-                self.logger.error(f"[E40021]{OsBootFailureException().message}", stack_info=False)
+            is_polling, cnt, is_break = self._requests_proc(procedure, code, body, status, cnt, is_polling)
+            if is_break is True:
                 break
 
         return code, body, is_polling
+
+    def _requests_proc(self, procedure: Procedure, code: int, body: dict, status: bool, cnt: int, is_polling: bool):
+        """request process.
+
+        Args:
+            procedure (Procedure): Migration plan
+            code (int): is_os_boot response status code
+            body (dict): is_os_boot response body
+            status (bool): is_os_boot response body
+            cnt (int): count of polling
+            is_polling (bool): polling flag
+
+        Returns:
+            is_polling: polling flag. execute max polling Yes(True) or No(False).
+            cnt: count of polling
+            is_break: break flag
+
+        """
+        is_break = False
+        if code == HTTPStatus.OK and status is False:
+            is_polling = True
+            cnt += 1
+            self.logger.info(
+                f"""
+                    OS not started. status:[{status}], response[{body}],
+                    device id:{procedure.targetDeviceID},
+                    polling[count:{cnt}, limit:{self.polling_count}],
+                """
+            )
+            time.sleep(self.polling_interval)
+        elif code in self.skip_status_codes and body.get("code") in self.skip_codes:
+            self.is_os_boot_detail.code = body.get("code")
+            is_polling = False
+            self.logger.info(
+                f"""
+                    The device is not a CPU. Skip running OS startup confirmation API.
+                    device id:{procedure.targetDeviceID},status:[{status}],response[{body}]
+                """
+            )
+            is_break = True
+        else:
+            self.is_os_boot_detail.code = body.get("code", "")
+            self.logger.error(f"[E40021]{OsBootFailureException().message}", stack_info=False)
+            is_break = True
+
+        return is_polling, cnt, is_break
 
 
 class PowerOffAPI(HarwareManageAPIBase):
@@ -611,7 +618,7 @@ class PowerOffAPI(HarwareManageAPIBase):
             hardware_control_conf (dict): Hardware control function settings
             get_info_conf (dict): Get information function settings
             api_config (dict): Retry settings for each API, etc.
-            logger_args (dict): GILogger argument
+            logger_args (dict): Logger argument
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.get_info_api = GetDeviceInformationAPI(
@@ -672,8 +679,12 @@ class PowerOffAPI(HarwareManageAPIBase):
                     "Off", self.count, self.interval, self.get_info_api, procedure
                 )
                 if is_expected is False:
-                    self.logger.error(f"[E40023]{FailedGetDeviceInfoException().message}", stack_info=False)
+                    exc = PowerStateNotChangeException("Off", procedure.targetDeviceID, power_state)
                     self.detail.status = Result.FAILED
+                    self.detail.responseBody = {
+                        "code": "E40029",
+                        "message": exc.message,
+                    }
                 self.detail.getInformation = {"responseBody": {"powerState": power_state}}
             elif is_cpu is None:  # pragma: no cover
                 self._set_detail(HTTPStatus.INTERNAL_SERVER_ERROR, None, procedure)
@@ -699,7 +710,7 @@ class GetDeviceInformationAPI(HarwareManageAPIBase):
         Args:
             get_info_conf (dict): Hardware control function settings
             api_config (dict): Retry settings for each API, etc.
-            logger_args (dict): GILogger argument
+            logger_args (dict): Logger argument
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.get_information_host = get_info_conf.get("host")
@@ -841,6 +852,11 @@ class DisconnectAPI(HarwareManageAPIBase):
                 "Off", self.count, self.interval, self.get_info_api, procedure
             )
             if is_expected is False or err_resp is not None:
+                exc = PowerStateNotChangeException("Off", procedure.targetDeviceID, power_state)
+                self.detail.responseBody = {
+                    "code": "E40029",
+                    "message": exc.message,
+                }
                 self._set_detail_on_preproc_error(procedure)
                 self.detail.getInformation = {"responseBody": err_resp or {"powerState": power_state}}
         elif can_power_operate is False:
@@ -933,6 +949,11 @@ class ConnectAPI(HarwareManageAPIBase):
                 "On", self.count, self.interval, self.get_info_api, procedure
             )
             if is_expected is False or err_resp is not None:
+                exc = PowerStateNotChangeException("Off", procedure.targetDeviceID, power_state)
+                self.detail.responseBody = {
+                    "code": "E40029",
+                    "message": exc.message,
+                }
                 self._set_detail_on_preproc_error(procedure)
                 self.detail.getInformation = {"responseBody": err_resp or {"powerState": power_state}}
                 self._set_procedure_time(started_at)

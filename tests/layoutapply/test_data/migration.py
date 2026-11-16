@@ -158,7 +158,7 @@ CONF_NODES_API_RESP_DATA_MULTIDEVICE_WITH_NODEID = {
                     "device": {
                         "deviceID": "7c6f9db2-5d35-4310-90f6-7e004ad2f35a",
                         "status": {"health": "OK", "state": "Starting"},
-                        "type": "memory",
+                        "type": "memory0123456789",
                     },
                     "resourceGroupIDs": ["00000000-0000-7000-8000-000000000000"],
                 },
@@ -292,7 +292,7 @@ MIGRATION_IN_DATA = {
             {
                 "device": {
                     "cpu": {"deviceIDs": ["2CA6D4DF-2739-45BA-ACA4-6ABE93E81E15"]},
-                    "memory": {"deviceIDs": ["035AA32D-6C3F-488E-9602-62286A509288"]},
+                    "memory0123456789": {"deviceIDs": ["035AA32D-6C3F-488E-9602-62286A509288"]},
                     "storage": {"deviceIDs": ["42243124-9655-4B12-B638-A15BFE021065"]},
                     "networkInterface": {"deviceIDs": ["0E9A2838-6AA9-40D2-B3E0-EA7B15E8F18D"]},
                 }
@@ -473,7 +473,7 @@ GET_AVAILABLE_RESOURCES_API_RESP = {
                 "deviceID": "cc464ed7-1dd3-4164-9a48-95d20f495ee8",
                 "memorySummary": {"ECCModeEnabled": True, "totalCacheSizeMiB": 4096, "totalMemorySizeMiB": 8192},
                 "powerCapability": True,
-                "type": "memory",
+                "type": "memory0123456789",
             },
             "nodeIDs": ["cc464ed7-1dd3-4164-9a48-95d20f495ee8"],
             "resourceGroupIDs": ["00000000-0000-7000-8000-000000000000"],

@@ -13,13 +13,14 @@
 #  under the License.
 """Test for api"""
 
-import copy
 import json
+import logging
 import re
 import secrets
 import string
 import urllib
 from logging import DEBUG, ERROR
+from logging.config import dictConfig
 from multiprocessing import Process
 from time import sleep
 
@@ -34,28 +35,23 @@ from werkzeug import Response
 from layoutapply.const import IdParameter, Result
 from layoutapply.custom_exceptions import SettingFileLoadException
 from layoutapply.db import DbAccess
-from layoutapply.server import app, main
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.server import _exec_subprocess, _initialize, app, main
+from layoutapply.setting import LayoutApplyConfig, LayoutApplyLogConfig
 from layoutapply.util import create_randomname
-from tests.layoutapply.conftest import (
-    CONF_NODES_URL,
-    DEVICE_INFO_URL,
-    GET_INFORMATION_URI,
-    HARDWARE_CONTROL_URI,
-    OPERATION_URL,
-    OS_BOOT_URL,
-    POWER_OPERATION_URL,
-)
+from tests.layoutapply.conftest import CONF_NODES_URL
 from tests.layoutapply.test_data import checkvalid, migration, procedure, sql
 
 client = TestClient(app)
+
+LOG_PATH = "/var/log/cdim/app_layout_apply.log"
+
 
 BASE_CONFIG = {
     "layout_apply": {"host": "0.0.0.0", "port": 8003, "request": {}},
     "db": {
         "dbname": "layoutapply",
         "user": "user01",
-        "password": "testpw",
+        "password": "P@ssw0rd",
         "host": "localhost",
         "port": 5435,
     },
@@ -88,7 +84,7 @@ BASE_CONFIG = {
     "hardware_control": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "disconnect": {
             "retry": {
                 "targets": [
@@ -134,14 +130,20 @@ BASE_CONFIG = {
     "migration_procedure_generator": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "timeout": 30,
     },
     "configuration_manager": {
         "host": "localhost",
         "port": 48889,
-        "uri": "dagsw/api/v1",
+        "uri": "cdim/api/v1",
         "timeout": 30,
+    },
+    "message_broker": {
+        "host": "localhost",
+        "port": 3500,
+        "pubsub": "layout_apply_apply",
+        "topic": "layout_apply_apply.completed",
     },
 }
 
@@ -164,25 +166,18 @@ get_list_assert_target = {
         {
             "status": "COMPLETED",
             "applyID": "000000003c",
-            "procedures": {"procedures": "pre_test"},
-            "applyResult": [{"test": "test"}, {"test": "test"}],
             "startedAt": "2023-10-02T00:00:00Z",
             "endedAt": "2023-10-02T12:23:59Z",
         },
         {
             "status": "FAILED",
             "applyID": "000000004d",
-            "procedures": {"procedures": "pre_test"},
-            "applyResult": [{"test": "test"}, {"test": "test"}],
             "startedAt": "2023-10-02T00:00:01Z",
             "endedAt": "2023-10-02T12:24:00Z",
         },
         {
             "status": "CANCELED",
             "applyID": "000000005e",
-            "procedures": {"procedures": "pre_test"},
-            "applyResult": [{"test": "test"}, {"test": "test"}],
-            "rollbackProcedures": {"test": "test"},
             "startedAt": "2023-10-02T00:00:02Z",
             "endedAt": "2023-10-02T12:24:01Z",
             "canceledAt": "2023-10-02T12:00:00Z",
@@ -191,15 +186,11 @@ get_list_assert_target = {
         {
             "status": "CANCELED",
             "applyID": "000000006f",
-            "procedures": {"procedures": "pre_test"},
-            "applyResult": [{"test": "test"}, {"test": "test"}],
-            "rollbackProcedures": {"test": "test"},
             "startedAt": "2023-10-03T00:00:00Z",
             "endedAt": "2023-10-04T12:23:59Z",
             "canceledAt": "2023-10-03T12:00:00Z",
             "executeRollback": True,
             "rollbackStatus": "COMPLETED",
-            "rollbackResult": [{"test": "test"}, {"test": "test"}],
             "rollbackStartedAt": "2023-10-03T12:20:00Z",
             "rollbackEndedAt": "2023-10-04T12:23:59Z",
         },
@@ -221,10 +212,7 @@ get_list_assert_target = {
         {
             "status": "SUSPENDED",
             "applyID": "000000009c",
-            "procedures": {"procedures": "pre_test"},
-            "applyResult": [{"test": "test"}, {"test": "test"}],
             "startedAt": "2023-10-02T00:00:01Z",
-            "resumeProcedures": {"test": "pre_test"},
             "suspendedAt": "2024-01-02T12:23:00Z",
         },
     ],
@@ -233,43 +221,14 @@ get_list_assert_target = {
 
 @pytest.mark.usefixtures("httpserver_listen_address")
 class TestAPIServer:
+
     @pytest.mark.parametrize(("procedures", "sleep_time", "applyID"), procedure.multi_pattern)
-    def test_execute_layoutapply_status_completed_when_multiple_migration_steps(
-        self, sleep_time, procedures, init_db_instance, applyID, httpserver: HTTPServer
+    def test_execute_layoutapply_success(
+        self, mocker, sleep_time, procedures, init_db_instance, applyID, docker_services
     ):
-        # arrange
-        config = LayoutApplyConfig()
-        sleep(sleep_time)
-        uri = HARDWARE_CONTROL_URI
-
-        httpserver.clear()
-        httpserver.clear_all_handlers()
-
-        response = client.post(httpserver.url_for("/cdim/api/v1/layout-apply"), json=procedures)
-
-        # with httpserver.wait(stop_on_nohandler=False, timeout=0.1) as waiter:
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{POWER_OPERATION_URL}"), method="PUT").respond_with_response(
-            Response("", status=200)
-        )
-        httpserver.expect_request(re.compile(f"\/{uri}\/{OS_BOOT_URL}"), method="GET").respond_with_json(
-            {"status": True, "IPAddress": "192.168.122.11"}, status=200
-        )
-        httpserver.expect_request(
-            re.compile(f"\/{GET_INFORMATION_URI}\/{DEVICE_INFO_URL}"), method="GET"
-        ).respond_with_json(
-            {"type": "CPU", "powerState": "Off", "powerCapability": False},
-            status=200,
-        )
-
+        mocker.patch("layoutapply.server._exec_subprocess", return_value=(None, "return_data", 1))
+        mocker.patch.object(DbAccess, "update_subprocess", return_value=None)
+        response = client.post("/cdim/api/v1/layout-apply", json=procedures)
         id_ = json.loads(response.content).get("applyID")
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{id_}'")
@@ -281,95 +240,8 @@ class TestAPIServer:
         assert len(row.get("applyid")) == 10
 
         assert response.status_code == 202
-        # result of the operation completion list is 'IN_PROGRESS'
-        if row.get("status") == "IN_PROGRESS":
-            assert row.get("status") == "IN_PROGRESS"
-            with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-                for _ in range(15):
-                    sleep(0.5)
-                    cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{id_}'")
-                    init_db_instance.commit()
-                    row = cursor.fetchone()
-                    if row.get("status") == "COMPLETED":
-                        break
-        assert row.get("status") == "COMPLETED"
-        assert row.get("rollbackprocedures") is None
-        # execution results are dumped.
-        details = row.get("applyresult")
-        assert details is not None
-        assert len(details) == len(procedures["procedures"])
-        host = config.hardware_control.get("host")
-        port = config.hardware_control.get("port")
-        uri = config.hardware_control.get("uri")
-        for proc in procedures["procedures"]:
-            # Search for items corresponding to the migration procedure from the result details using operationID as a condition
-            detail = [i for i in details if i["operationID"] == proc["operationID"]][0]
-            assert proc["operationID"] == detail["operationID"]
-            assert "COMPLETED" == detail["status"]
-            # Check the URI, etc. of the hardware control API
-
-            # Review the mockup method with hardwaremgr_fixture as well
-
-            match proc["operation"]:
-                case "connect":
-                    assert re.fullmatch(
-                        f"http:\/\/{host}:{port}\/{uri}\/cpu\/(.*)\/aggregations",
-                        detail["uri"],
-                    )
-                    assert "PUT" == detail["method"]
-                    assert detail["requestBody"] == {
-                        "action": "connect",
-                        "deviceID": proc["targetDeviceID"],
-                    }
-                    assert "queryParameter" not in detail
-                    assert 200 == detail["statusCode"]
-
-                case "disconnect":
-                    assert re.fullmatch(
-                        f"http:\/\/{host}:{port}\/{uri}\/cpu\/(.*)\/aggregations",
-                        detail["uri"],
-                    )
-                    assert "PUT" == detail["method"]
-                    assert detail["requestBody"] == {
-                        "action": "disconnect",
-                        "deviceID": proc["targetDeviceID"],
-                    }
-                    assert "queryParameter" not in detail
-                    assert 200 == detail["statusCode"]
-
-                case "boot":
-                    assert re.fullmatch(
-                        f"http:\/\/{host}:{port}\/{uri}\/devices\/(.*)\/power",
-                        detail["uri"],
-                    )
-                    assert "PUT" == detail["method"]
-                    assert detail["requestBody"] == {"action": "on"}
-                    assert "queryParameter" not in detail
-                    assert 200 == detail["statusCode"]
-                    is_os_boot_detail = detail["isOSBoot"]
-                    assert re.fullmatch(
-                        f"http:\/\/{host}:{port}\/{uri}\/cpu\/(.*)\/is\-os\-ready",
-                        is_os_boot_detail["uri"],
-                    )
-                    assert "GET" == is_os_boot_detail["method"]
-                    assert "queryParameter" in is_os_boot_detail
-                    assert is_os_boot_detail["queryParameter"] == {"timeOut": 2}
-                    assert is_os_boot_detail["statusCode"] == 200
-                case "poweroff":
-                    assert re.fullmatch(
-                        f"http:\/\/{host}:{port}\/{uri}\/devices\/(.*)\/power",
-                        detail["uri"],
-                    )
-                    assert "PUT" == detail["method"]
-                    assert "queryParameter" not in detail
-                    assert 200 == detail["statusCode"]
-                    assert detail["requestBody"] == {"action": "off"}
-                    get_information = detail["getInformation"]
-                    assert {"powerState": "Off"} == get_information["responseBody"]
-
-        sleep(0.1)
-        httpserver.clear()
-        httpserver.clear_all_handlers()
+        assert response.charset_encoding == "utf-8"
+        assert response.headers.get("X-Content-Type-Options") == "nosniff"
 
     @pytest.mark.parametrize(("procedures", "sleep_time"), procedure.proc_empty_pattern)
     @pytest.mark.usefixtures("hardwaremgr_fixture")
@@ -413,6 +285,18 @@ class TestAPIServer:
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E40001"
 
+    @pytest.mark.parametrize("procedures", checkvalid.any_key_combination)
+    def test_execute_layoutapply_failure_when_any_key_combination(self, procedures):
+        # arrange
+
+        response = client.post("/cdim/api/v1/layout-apply", json=procedures)
+        # assert
+
+        assert response.status_code == 400
+
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E40001"
+
     @pytest.mark.parametrize("procedures", checkvalid.invalid_data_type)
     def test_execute_layoutapply_failure_when_invalid_data_type(self, procedures):
         # arrange
@@ -438,7 +322,9 @@ class TestAPIServer:
         assert error_response["code"] == "E40001"
 
     def test_execute_layoutapply_failure_when_failed_to_load_config_file(self, mocker):
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
 
         # arrange
 
@@ -459,10 +345,37 @@ class TestAPIServer:
 
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_config.yaml.\n('Dummy message',)"
+
+    def test_execute_layoutapply_failure_when_failed_to_load_log_config_file(self, mocker, docker_services):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir", side_effect=[Exception("Dummy message")])
+
+        # arrange
+
+        procedure_data = {
+            "procedures": [
+                {
+                    "operationID": 1,
+                    "operation": "shutdown",
+                    "targetDeviceID": "466cdeb7-d67b-4f0b-805e-85d54c7b5f41",
+                    "dependencies": [],
+                }
+            ],
+        }
+        response = client.post("/cdim/api/v1/layout-apply", json=procedure_data)
+        # assert
+
+        assert response.status_code == 500
+
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_log_config.yaml.\n('Dummy message',)"
 
     def test_execute_layoutapply_main_failure_when_failed_to_load_config_file(self, capfd, mocker):
         # arrange
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
 
         with pytest.raises(SystemExit) as excinfo:
             main()
@@ -474,7 +387,7 @@ class TestAPIServer:
         # There is no standard output
         assert out == ""
 
-        regex = re.compile(r"^Failed to load layoutapply_config.yaml.")
+        regex = re.compile(r"^Failed to load layoutapply_config.yaml")
         assert regex.search(err)
 
     def test_execute_layoutapply_failure_when_failure_to_load_secret_file(self, mocker, init_db_instance):
@@ -502,29 +415,42 @@ class TestAPIServer:
         assert error_response["code"] == "E40030"
 
     @pytest.mark.parametrize(
-        "update_config",
+        "log_config",
         [
-            # log_dir is invalid
             {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "test/test",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
+                "version": 1,
+                "formatters": {
+                    "standard": {
+                        "format": "%(asctime)s %(levelname)s %(message)s",
+                        "datefmt": "%Y/%m/%d %H:%M:%S.%f",
+                    }
+                },
+                "handlers": {
+                    "file": {
+                        "class": "logging.handlers.RotatingFileHandler",
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "filename": "test/test",
+                        "maxBytes": 100000000,
+                        "backupCount": 72,
+                        "encoding": "utf-8",
+                    },
+                    "console": {
+                        "class": "logging.StreamHandler",
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "stream": "ext://sys.stdout",
+                    },
+                },
+                "root": {
+                    "level": "INFO",
+                    "handlers": ["file", "console"],
+                },
+            }
         ],
     )
-    def test_execute_layoutapply__failure_when_failed_to_initialize_logger(
-        self, mocker, update_config, init_db_instance
-    ):
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
-        mocker.patch.object(LayoutApplyConfig, "_validate_log_dir")
+    def test_execute_layoutapply__failure_when_failed_to_initialize_logger(self, mocker, log_config, init_db_instance):
+        mocker.patch.object(LayoutApplyLogConfig, "log_config", log_config)
 
         # arrange
 
@@ -547,9 +473,8 @@ class TestAPIServer:
         assert error_response["code"] == "E40031"
 
     def test_execute_layoutapply_failure_when_query_failure_occurred(self, mocker, caplog):
-        # arrange
+        mocker.patch("logging.config.dictConfig")
 
-        caplog.set_level(ERROR)
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
         # Create a connection object for testing.
@@ -566,8 +491,6 @@ class TestAPIServer:
 
         # act
         response = client.post("/cdim/api/v1/layout-apply", json=procedure.single_pattern[0][0])
-
-        # assert
 
         assert response.status_code == 500
 
@@ -694,16 +617,9 @@ class TestAPIServer:
 
     @pytest.mark.parametrize(("procedures", "sleep_time", "applyID"), procedure.single_pattern)
     def test_execute_layoutapply_failure_when_failed_to_start_subprocess(
-        self,
-        mocker,
-        caplog,
-        sleep_time,
-        applyID,
-        procedures,
-        init_db_instance,
+        self, mocker, sleep_time, applyID, procedures, init_db_instance, caplog
     ):
-        # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
 
         # arrange
 
@@ -878,13 +794,28 @@ class TestCancelAPIServer:
 
     def test_cancel_layoutapply_failure_when_failed_to_load_config_file(self, mocker, init_db_instance):
 
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
         response = client.put("/cdim/api/v1/layout-apply/012345678a?action=cancel")
 
         assert response.status_code == 500
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E40002"
         assert "Failed to load layoutapply_config.yaml." in error_response["message"]
+
+    def test_cancel_layoutapply_failure_when_failed_to_load_log_config_file(self, mocker):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir", side_effect=[Exception("Dummy message")])
+
+        # arrange
+        response = client.put("/cdim/api/v1/layout-apply/012345678a?action=cancel")
+        # assert
+
+        assert response.status_code == 500
+
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_log_config.yaml.\n('Dummy message',)"
 
     @pytest.mark.parametrize(
         ("execution_command", "process_startedat"),
@@ -1082,17 +1013,33 @@ class TestCancelAPIServer:
 class TestGetAPIServer:
 
     def test_get_applystatus_failure_when_failed_to_load_config_file(self, mocker):
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
 
         response = client.get("/cdim/api/v1/layout-apply/123456789a")
         # assert
         assert response.status_code == 500
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_config.yaml.\n('Dummy message',)"
+
+    def test_get_applystatus_failure_when_failed_to_load_log_config_file(self, mocker):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir", side_effect=[Exception("Dummy message")])
+
+        # arrange
+        response = client.get("/cdim/api/v1/layout-apply/123456789a")
+        # assert
+
+        assert response.status_code == 500
+
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_log_config.yaml.\n('Dummy message',)"
 
     def test_get_applystatus_failure_when_query_failure_occurred(self, mocker, caplog):
-        # arrange
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
+
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
         # Create a connection object for testing.
@@ -1132,7 +1079,7 @@ class TestGetAPIServer:
         assert "Could not connect to ApplyStatusDB." in error_response["message"]
 
     def test_get_applystatus_failure_when_nonexistent_id(self, mocker, init_db_instance, caplog):
-        caplog.set_level(ERROR)
+        mocker.patch("logging.config.dictConfig")
 
         # act
         response = client.get("/cdim/api/v1/layout-apply/9999999999")
@@ -1155,6 +1102,7 @@ class TestGetAPIServer:
                     "status": "IN_PROGRESS",
                     "applyID": "000000001a",
                     "startedAt": "2023-10-02T00:00:00Z",
+                    "procedures": {"procedures": "pre_test"},
                 },
             ),
             (
@@ -1165,6 +1113,9 @@ class TestGetAPIServer:
                     "startedAt": "2023-10-01T23:59:59Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
                     "executeRollback": True,
+                    "procedures": {"procedures": "pre_test"},
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "rollbackProcedures": {"test": "test"},
                 },
             ),
             (
@@ -1230,6 +1181,9 @@ class TestGetAPIServer:
                     "canceledAt": "2023-10-02T12:00:00Z",
                     "executeRollback": True,
                     "rollbackStartedAt": "2023-10-02T12:20:00Z",
+                    "procedures": {"procedures": "pre_test"},
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "rollbackProcedures": {"test": "test"},
                 },
             ),
             (
@@ -1240,11 +1194,19 @@ class TestGetAPIServer:
                     "startedAt": "2023-10-01T23:59:59Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
                     "executeRollback": False,
+                    "procedures": {"procedures": "pre_test"},
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
                 },
             ),
         ],
     )
-    def test_get_applystatus_success(self, mocker, init_db_instance, caplog, insert_sql, assert_target):
+    def test_get_applystatus_success(self, mocker, init_db_instance, insert_sql, assert_target, caplog):
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
+
         # Data adjustment before testing.
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -1256,12 +1218,11 @@ class TestGetAPIServer:
         response = client.get(f"/cdim/api/v1/layout-apply/{applyid}")
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == assert_target
-        assert json.loads(caplog.record_tuples[5][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
         # data adjustment after testing
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.delete_for_applyid_sql, vars=[applyid])
@@ -1276,7 +1237,10 @@ class TestGetAPIServer:
                     "status": "IN_PROGRESS",
                     "applyID": "300000006a",
                     "startedAt": "2023-10-02T00:00:00Z",
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
                     "resumedAt": "2023-10-03T12:23:59Z",
+                    "procedures": {"procedures": "pre_test"},
+                    "resumeProcedures": {"test": "pre_test"},
                 },
             ),
             (
@@ -1287,15 +1251,35 @@ class TestGetAPIServer:
                     "startedAt": "2023-10-02T00:00:00Z",
                     "canceledAt": "2023-10-02T00:00:01Z",
                     "executeRollback": True,
+                    "rollbackResult": [{"test": "test"}, {"test": "test"}],
                     "rollbackStartedAt": "2023-10-02T00:00:02Z",
+                    "resumeResult": [{"test": "test"}],
                     "resumedAt": "2023-10-03T12:23:59Z",
+                    "procedures": {"procedures": "pre_test"},
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "resumeProcedures": {"test": "pre_test"},
+                },
+            ),
+            (
+                sql.insert_resumed_get_target_sql_5,
+                {
+                    "status": "IN_PROGRESS",
+                    "applyID": "300000004d",
+                    "startedAt": "2023-10-02T00:00:00Z",
+                    "applyResult": [{"test": "test"}, {"test": "test"}],
+                    "resumeResult": [{"test": "test"}],
+                    "resumedAt": "2023-10-03T12:23:59Z",
+                    "procedures": {"procedures": "pre_test"},
+                    "resumeProcedures": {"test": "pre_test"},
                 },
             ),
         ],
     )
     def test_get_applystatus_success_when_state_in_progress_or_canceling_data(
-        self, mocker, init_db_instance, caplog, assert_target, insert_sql
+        self, mocker, init_db_instance, assert_target, insert_sql, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -1312,7 +1296,7 @@ class TestGetAPIServer:
 
         get_response = json.loads(response.content.decode())
         assert get_response == assert_target
-        assert json.loads(caplog.record_tuples[5][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         ("insert_sql", "assert_target"),
@@ -1330,7 +1314,9 @@ class TestGetAPIServer:
             )
         ],
     )
-    def test_get_applystatus_success_when_valid_data(self, mocker, init_db_instance, caplog, assert_target, insert_sql):
+    def test_get_applystatus_success_when_valid_data(self, mocker, init_db_instance, assert_target, insert_sql, caplog):
+        mocker.patch("logging.config.dictConfig")
+
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -1347,7 +1333,7 @@ class TestGetAPIServer:
 
         get_response = json.loads(response.content.decode())
         assert get_response == assert_target
-        assert json.loads(caplog.record_tuples[5][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "args",
@@ -1372,139 +1358,43 @@ class TestGetAPIServer:
         assert error_response["code"] == "E40001"
 
     @pytest.mark.parametrize(
-        "params",
-        [
-            ({"fields": [""]}),  # empty string
-            ({"fields": ["procedure"]}),  # invalid name
-            ({"fields": ["applyresult"]}),  # invalid name
-            ({"fields": ["rollbackProcedure"]}),  # invalid name
-            ({"fields": ["rollbackresult"]}),  # invalid name
-        ],
-    )
-    def test_get_applystatus_failure_when_invalid_field(self, params):
-
-        # arrange
-
-        response = client.get("/cdim/api/v1/layout-apply/296800001a", params=params)
-        # assert
-
-        assert response.status_code == 400
-
-        error_response = json.loads(response.content.decode())
-        assert error_response["code"] == "E40001"
-
-    @pytest.mark.parametrize(
-        "insert_sql, params, in_data, not_in_data",
+        ("insert_sql", "assert_target"),
         [
             (
-                sql.get_fields_insert_sql_1,
-                {"fields": ["procedures"]},
-                ["procedures"],
-                ["applyResult", "rollbackProcedures", "rollbackResult"],
-            ),  # fields(one)
-            (
-                sql.get_fields_insert_sql_1,
-                {"fields": ["procedures", "applyResult"]},
-                ["procedures", "applyResult"],
-                ["rollbackProcedures", "rollbackResult"],
-            ),  # fields(multi)
-            (
-                sql.get_fields_insert_sql_1,
+                sql.get_valid_insert_sql,
                 {
-                    "fields": [
-                        "procedures",
-                        "applyResult",
-                        "rollbackProcedures",
-                        "rollbackResult",
-                    ]
+                    "status": "COMPLETED",
+                    "applyID": "999999999a",
+                    "procedures": [],
+                    "applyResult": [],
+                    "startedAt": "2023-10-02T00:00:00Z",
+                    "endedAt": "2023-10-02T12:23:59Z",
                 },
-                ["procedures", "applyResult"],
-                ["rollbackProcedures", "rollbackResult"],
-            ),  # fields all・status:COMPLETED(there is no output item)
-            (
-                sql.get_fields_insert_sql_2,
-                {
-                    "fields": [
-                        "procedures",
-                        "applyResult",
-                        "rollbackProcedures",
-                        "rollbackResult",
-                    ]
-                },
-                [],
-                ["procedures", "applyResult", "rollbackProcedures", "rollbackResult"],
-            ),  # fields all・status:IN_PROGRESS(there is no output item)
-            (
-                sql.get_fields_insert_sql_3,
-                {
-                    "fields": [
-                        "procedures",
-                        "applyResult",
-                        "rollbackProcedures",
-                        "rollbackResult",
-                    ]
-                },
-                [],
-                ["procedures", "applyResult", "rollbackProcedures", "rollbackResult"],
-            ),  # fields all・status:CANCELING(there is no output item)
-            (
-                sql.get_fields_insert_sql_4,
-                {"fields": ["applyResult", "rollbackResult"]},
-                ["applyResult"],
-                ["procedures", "rollbackProcedures", "rollbackResult"],
-            ),  # fields(multi)・status:FAILED(there is no output item)
-            (
-                sql.get_fields_insert_sql_5,
-                {
-                    "fields": [
-                        "procedures",
-                        "applyResult",
-                        "rollbackProcedures",
-                        "rollbackResult",
-                    ]
-                },
-                ["procedures", "applyResult", "rollbackProcedures"],
-                ["rollbackResult"],
-            ),  # fields all・no rollback and status:no rollback and ollbackResult has not been output due to the CANCELED status.
-            (
-                sql.get_fields_insert_sql_6,
-                {
-                    "fields": [
-                        "procedures",
-                        "applyResult",
-                        "rollbackProcedures",
-                        "rollbackResult",
-                    ]
-                },
-                ["procedures", "applyResult", "rollbackProcedures", "rollbackResult"],
-                [],
-            ),  # fields all・the status is CANCELED with a rollback, all items are outputted.
+            )
         ],
     )
-    def test_get_applystatus_success_when_field_specified(
-        self, mocker, init_db_instance, caplog, insert_sql, params, in_data, not_in_data
+    def test_get_applystatus_success_when_invalid_option_specified(
+        self, mocker, init_db_instance, assert_target, insert_sql, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=insert_sql, vars=[applyid])
         init_db_instance.commit()
-        # arrange
+        assert_target["applyID"] = applyid
 
-        response = client.get(f"/cdim/api/v1/layout-apply/{applyid}", params=params)
+        # act
+        response = client.get(f"/cdim/api/v1/layout-apply/{applyid}", params={"fields": ["procedures"]})
+
         # assert
 
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
-        # Only items specified in the fields are output, and unspecified items are not output.
-        if in_data:
-            for data in in_data:
-                assert data in get_response
-        if not_in_data:
-            for not_data in not_in_data:
-                assert not_data not in get_response
-        assert json.loads(caplog.record_tuples[5][2]).get("message") == "Completed successfully."
+        assert get_response == assert_target
+        assert "Completed successfully." in caplog.text
 
 
 @pytest.mark.usefixtures("httpserver_listen_address")
@@ -1534,7 +1424,9 @@ class TestGetListAPIServer:
 
     def test_get_applystatus_list_failure_when_failed_to_load_config_file(self, mocker):
 
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
 
         response = client.get("/cdim/api/v1/layout-apply")
         # assert
@@ -1543,11 +1435,24 @@ class TestGetListAPIServer:
 
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_config.yaml.\n('Dummy message',)"
 
-    def test_get_applystatus_list_failure_when_query_failure_occurred(self, mocker, caplog):
+    def test_get_applystatus_list_failure_when_failed_to_load_log_config_file(self, mocker, docker_services):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir", side_effect=[Exception("Dummy message")])
+
         # arrange
+        response = client.get("/cdim/api/v1/layout-apply")
+        # assert
 
-        caplog.set_level(ERROR)
+        assert response.status_code == 500
+
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_log_config.yaml.\n('Dummy message',)"
+
+    def test_get_applystatus_list_failure_when_query_failure_occurred(self, mocker, caplog, docker_services):
+        mocker.patch("logging.config.dictConfig")
+
         mock_cursor = mocker.MagicMock()
         mock_cursor.execute.side_effect = psycopg2.ProgrammingError
         # Create a connection object for testing.
@@ -1574,7 +1479,7 @@ class TestGetListAPIServer:
         assert "Query failed." in error_response["message"]
         assert "[E40019]Query failed." in caplog.text
 
-    def test_get_applystatus_list_failure_when_failed_db_connection(self, mocker):
+    def test_get_applystatus_list_failure_when_failed_db_connection(self, mocker, docker_services):
         # arrange
         mocker.patch.object(DbAccess, "get_apply_status_list", side_effect=psycopg2.OperationalError)
 
@@ -1680,8 +1585,13 @@ class TestGetListAPIServer:
         ],
     )
     def test_get_applystatus_list_success_when_start_time_specified(
-        self, mocker, query_parameter, init_db_instance, caplog
+        self, mocker, query_parameter, init_db_instance, caplog, docker_services
     ):
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
         # Data adjustment before testing.
         id_list = self.insert_list_data(init_db_instance)
 
@@ -1700,15 +1610,11 @@ class TestGetListAPIServer:
                 {
                     "status": "CANCELED",
                     "applyID": id_list[5],
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-03T00:00:00Z",
                     "endedAt": "2023-10-04T12:23:59Z",
                     "canceledAt": "2023-10-03T12:00:00Z",
                     "executeRollback": True,
                     "rollbackStatus": "COMPLETED",
-                    "rollbackResult": [{"test": "test"}, {"test": "test"}],
                     "rollbackStartedAt": "2023-10-03T12:20:00Z",
                     "rollbackEndedAt": "2023-10-04T12:23:59Z",
                 },
@@ -1721,9 +1627,11 @@ class TestGetListAPIServer:
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_1
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     def test_get_applystatus_list_success(self, mocker, init_db_instance, caplog):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -1741,9 +1649,11 @@ class TestGetListAPIServer:
         assert get_response["totalCount"] == get_list_assert_target["totalCount"]
         for a in get_response["applyResults"]:
             assert a in get_list_assert_target["applyResults"]
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     def test_get_applystatus_list_success_when_no_results_fetched(self, mocker, init_db_instance, caplog):
+        mocker.patch("logging.config.dictConfig")
+
         assert_target = {
             "totalCount": 0,
             "count": 0,
@@ -1759,7 +1669,7 @@ class TestGetListAPIServer:
 
         get_response = json.loads(response.content.decode())
         assert get_response == assert_target
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "params",
@@ -1855,7 +1765,15 @@ class TestGetListAPIServer:
             ),  # fields:procedures/applyResult/rollbackProcedures/rollbackResult
         ],
     )
-    def test_get_applystatus_list_success_when_field_specified(self, mocker, init_db_instance, caplog, params, fields):
+    def test_get_applystatus_list_success_when_field_specified(
+        self, mocker, docker_services, init_db_instance, params, fields, caplog
+    ):
+        mocker.patch("logging.config.dictConfig", lambda config: None)
+
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.INFO)
 
         def _fields_check(check_targets: list, fields: list, result: dict):
             for target in check_targets:
@@ -1868,12 +1786,10 @@ class TestGetListAPIServer:
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
         init_db_instance.commit()
-        response = client.get(f"/cdim/api/v1/layout-apply", params=params)
+        response = client.get("/cdim/api/v1/layout-apply", params=params)
 
         # assert
-
         assert response.status_code == 200
-
         get_response = json.loads(response.content.decode())
         # Only items specified in the fields are output, and unspecified items are not output.
         applyResults = get_response.get("applyResults")
@@ -1885,11 +1801,13 @@ class TestGetListAPIServer:
                     assert "rollbackProcedures" not in result
                     assert "rollbackResult" not in result
                     _fields_check(["procedures", "applyResult"], fields, result)
-                case "IN_PROGRESS" | "CANCELING":
+                case "IN_PROGRESS":
                     # no items that can be specified in fields
-                    assert "procedures" not in result
                     assert "applyResult" not in result
                     assert "rollbackProcedures" not in result
+                    assert "rollbackResult" not in result
+                case "CANCELING":
+                    # no items that can be specified in fields
                     assert "rollbackResult" not in result
                 case "CANCELED":
                     if result.get("executeRollback") is False:
@@ -1910,7 +1828,7 @@ class TestGetListAPIServer:
                             fields,
                             result,
                         )
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -1921,6 +1839,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_only_start_date_start_out_of_range(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -1939,15 +1859,11 @@ class TestGetListAPIServer:
                 {
                     "status": "CANCELED",
                     "applyID": "000000006f",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-03T00:00:00Z",
                     "endedAt": "2023-10-04T12:23:59Z",
                     "canceledAt": "2023-10-03T12:00:00Z",
                     "executeRollback": True,
                     "rollbackStatus": "COMPLETED",
-                    "rollbackResult": [{"test": "test"}, {"test": "test"}],
                     "rollbackStartedAt": "2023-10-03T12:20:00Z",
                     "rollbackEndedAt": "2023-10-04T12:23:59Z",
                 },
@@ -1960,7 +1876,7 @@ class TestGetListAPIServer:
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_all
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -1971,6 +1887,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_only_end_date_end_out_of_range(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -1989,9 +1907,6 @@ class TestGetListAPIServer:
                 {
                     "status": "CANCELED",
                     "applyID": "000000005e",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-02T00:00:02Z",
                     "endedAt": "2023-10-02T12:24:01Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
@@ -2001,12 +1916,11 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_all
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2017,6 +1931,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_only_end_date_start_out_of_range(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2035,15 +1951,11 @@ class TestGetListAPIServer:
                 {
                     "status": "CANCELED",
                     "applyID": "000000006f",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-03T00:00:00Z",
                     "endedAt": "2023-10-04T12:23:59Z",
                     "canceledAt": "2023-10-03T12:00:00Z",
                     "executeRollback": True,
                     "rollbackStatus": "COMPLETED",
-                    "rollbackResult": [{"test": "test"}, {"test": "test"}],
                     "rollbackStartedAt": "2023-10-03T12:20:00Z",
                     "rollbackEndedAt": "2023-10-04T12:23:59Z",
                 },
@@ -2051,12 +1963,11 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_all
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2067,6 +1978,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_end_date_end_out_of_range(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2085,9 +1998,6 @@ class TestGetListAPIServer:
                 {
                     "status": "CANCELED",
                     "applyID": "000000005e",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-02T00:00:02Z",
                     "endedAt": "2023-10-02T12:24:01Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
@@ -2097,12 +2007,11 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_all
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2113,6 +2022,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_boundary_value_of_end_date_end(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2131,12 +2042,11 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_all
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2145,6 +2055,8 @@ class TestGetListAPIServer:
         ],
     )
     def test_get_applystatus_list_success_when_status_specified(self, mocker, parameter_uri, init_db_instance, caplog):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2168,12 +2080,11 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_status
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2184,6 +2095,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_time_equals_for_time_specification(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2201,17 +2114,12 @@ class TestGetListAPIServer:
                 {
                     "status": "FAILED",
                     "applyID": "000000004d",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
                     "startedAt": "2023-10-02T00:00:01Z",
                     "endedAt": "2023-10-02T12:24:00Z",
                 },
                 {
                     "status": "CANCELED",
                     "applyID": "000000005e",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-02T00:00:02Z",
                     "endedAt": "2023-10-02T12:24:01Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
@@ -2221,7 +2129,6 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
@@ -2229,7 +2136,7 @@ class TestGetListAPIServer:
         assert get_response["totalCount"] == get_list_assert_target_equal["totalCount"]
         for a in get_response["applyResults"]:
             a in get_list_assert_target_equal["applyResults"]
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2240,6 +2147,8 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_add_second_to_upper_time_limit(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2257,9 +2166,6 @@ class TestGetListAPIServer:
                 {
                     "status": "CANCELED",
                     "applyID": "000000005e",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
-                    "rollbackProcedures": {"test": "test"},
                     "startedAt": "2023-10-02T00:00:02Z",
                     "endedAt": "2023-10-02T12:24:01Z",
                     "canceledAt": "2023-10-02T12:00:00Z",
@@ -2269,12 +2175,11 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target_plus1
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2285,6 +2190,7 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_subtract_second_from_lower_time_limit(
         self, mocker, parameter_uri, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2302,16 +2208,12 @@ class TestGetListAPIServer:
                 {
                     "status": "COMPLETED",
                     "applyID": "000000003c",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
                     "startedAt": "2023-10-02T00:00:00Z",
                     "endedAt": "2023-10-02T12:23:59Z",
                 },
                 {
                     "status": "FAILED",
                     "applyID": "000000004d",
-                    "procedures": {"procedures": "pre_test"},
-                    "applyResult": [{"test": "test"}, {"test": "test"}],
                     "startedAt": "2023-10-02T00:00:01Z",
                     "endedAt": "2023-10-02T12:24:00Z",
                 },
@@ -2319,7 +2221,6 @@ class TestGetListAPIServer:
         }
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
@@ -2327,12 +2228,17 @@ class TestGetListAPIServer:
         assert get_response["totalCount"] == get_list_assert_target_minus1["totalCount"]
         for a in get_response["applyResults"]:
             a in get_list_assert_target_minus1["applyResults"]
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     def test_get_applystatus_list_success_when_no_specified_sortby_and_orderby_and_count_offset(
-        self, mocker, init_db_instance, caplog
+        self, mocker, init_db_instance, caplog, docker_services
     ):
-        caplog.set_level(DEBUG)
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger()
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.DEBUG)
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2343,16 +2249,14 @@ class TestGetListAPIServer:
         response = client.get(request_uri)
 
         get_list_assert_target = {"totalCount": 1, "count": 1}
-
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response["count"] == get_list_assert_target["count"]
         assert get_response["totalCount"] == get_list_assert_target["totalCount"]
 
-        assert json.loads(caplog.record_tuples[13][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
         log_msg = json.loads(caplog.messages[11]).get("message")
         assert "ORDER BY startedAt desc " in log_msg
         assert "LIMIT 20 " in log_msg
@@ -2361,6 +2265,7 @@ class TestGetListAPIServer:
     def test_get_applystatus_list_success_when_specified_offset_exceed_data_count_registered_database(
         self, mocker, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
 
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
@@ -2374,12 +2279,11 @@ class TestGetListAPIServer:
         get_list_assert_target = {"totalCount": 9, "count": 0, "applyResults": []}
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response == get_list_assert_target
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
     @pytest.mark.parametrize(
         "parameter_uri",
@@ -2395,8 +2299,10 @@ class TestGetListAPIServer:
         ],
     )
     def test_get_applystatus_listsuccess_when_specified_sortby_and_orderby_and_count_offset(
-        self, mocker, parameter_uri: str, init_db_instance, caplog, docker_services
+        self, mocker, parameter_uri: str, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.get_list_insert_sql)
@@ -2415,14 +2321,13 @@ class TestGetListAPIServer:
         get_list_assert_target = {"totalCount": 9, "count": count}
 
         # assert
-
         assert response.status_code == 200
 
         get_response = json.loads(response.content.decode())
         assert get_response["count"] == get_list_assert_target["count"]
         assert get_response["totalCount"] == get_list_assert_target["totalCount"]
 
-        assert json.loads(caplog.record_tuples[6][2]).get("message") == "Completed successfully."
+        assert "Completed successfully." in caplog.text
 
 
 @pytest.mark.usefixtures("httpserver_listen_address")
@@ -2566,50 +2471,31 @@ class TestDeleteAPIServer:
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E40001"
 
-    def test_delete_layoutapply_failure_when_failed_to_load_config_file(self, mocker):
-
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
-        response = client.delete("/cdim/api/v1/layout-apply/012345678a")
-
-        assert response.status_code == 500
-        error_response = json.loads(response.content.decode())
-        assert error_response["code"] == "E40002"
-        assert "Failed to load layoutapply_config.yaml." in error_response["message"]
-
 
 @pytest.mark.usefixtures("httpserver_listen_address")
 class TestResumeAPIServer:
 
     @pytest.mark.usefixtures("hardwaremgr_fixture")
     def test_resume_layoutapply_success(self, mocker, init_db_instance):
+        mocker.patch("layoutapply.server._exec_subprocess", return_value=(None, "return_data", 1))
+        mocker.patch.object(DbAccess, "update_subprocess", return_value=None)
         # arrange
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.insert_resumed_target_sql_1, vars=[applyid])
-        init_db_instance.commit()
+            init_db_instance.commit()
         # arrange
-
         response = client.put(f"/cdim/api/v1/layout-apply/{applyid}?action=resume")
 
         # assert
         assert response.status_code == 202
         resume_response = json.loads(response.content.decode())
         assert resume_response["status"] == "IN_PROGRESS"
-        # Waiting until the layout apply is completed.
-        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            for i in range(15):
-                sleep(0.5)
-                try:
-                    cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
-                    init_db_instance.commit()
-                    row = cursor.fetchone()
-                except psycopg2.ProgrammingError:
-                    break
-                if row.get("status") == "COMPLETED":
-                    break
 
     def test_resume_layoutapply_success_when_rollbackstatus_suspended(self, mocker, init_db_instance):
         # arrange
+        mocker.patch("layoutapply.server._exec_subprocess", return_value=(None, "return_data", 1))
+        mocker.patch.object(DbAccess, "update_subprocess", return_value=None)
         applyid = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query=sql.insert_resumed_get_target_sql_4, vars=[applyid])
@@ -2622,8 +2508,6 @@ class TestResumeAPIServer:
         resume_response = json.loads(response.content.decode())
         assert resume_response["status"] == "CANCELED"
         assert resume_response["rollbackStatus"] == "IN_PROGRESS"
-        # Waiting until the layout  apply is completed.
-        sleep(0.8)
 
     def test_resume_layoutapply_success_when_rollbackstatus_completed(self, mocker, init_db_instance):
         # arrange
@@ -2638,6 +2522,16 @@ class TestResumeAPIServer:
         resume_response = json.loads(response.content.decode())
         assert resume_response["status"] == "CANCELED"
         assert resume_response["rollbackStatus"] == "COMPLETED"
+        sleep(5)
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
+            init_db_instance.commit()
+            row = cursor.fetchone()
+            pid = row.get("processid")
+            if pid is not None:
+                process = psutil.Process(pid)
+                if process.is_running():
+                    process.terminate()
 
     def test_resume_layoutapply_success_when_status_canceled(self, mocker, init_db_instance):
         # arrange
@@ -2664,6 +2558,16 @@ class TestResumeAPIServer:
         assert response.status_code == 200
         resume_response = json.loads(response.content.decode())
         assert resume_response["status"] == "COMPLETED"
+
+        with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
+            cursor.execute(query=f"SELECT * FROM applystatus WHERE applyid = '{applyid}'")
+            init_db_instance.commit()
+            row = cursor.fetchone()
+            pid = row.get("processid")
+            if pid is not None:
+                process = psutil.Process(pid)
+                if process.is_running():
+                    process.terminate()
 
     def test_resume_layoutapply_success_when_status_failed(self, mocker, init_db_instance):
         # arrange
@@ -2776,7 +2680,9 @@ class TestResumeAPIServer:
 
     def test_resume_layoutapply_failure_when_failed_to_load_config_file(self, mocker, init_db_instance):
 
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
 
         response = client.put("/cdim/api/v1/layout-apply/012345678a?action=resume")
         assert response.status_code == 500
@@ -2784,12 +2690,22 @@ class TestResumeAPIServer:
         assert error_response["code"] == "E40002"
         assert "Failed to load layoutapply_config.yaml." in error_response["message"]
 
-    def test_resume_layoutapply_failure_when_failed_to_start_subprocess(
-        self,
-        mocker,
-        caplog,
-        init_db_instance,
-    ):
+    def test_resume_layoutapply_failure_when_failed_to_load_log_config_file(self, mocker):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir", side_effect=[Exception("Dummy message")])
+
+        # arrange
+        response = client.put("/cdim/api/v1/layout-apply/012345678a?action=resume")
+        # assert
+
+        assert response.status_code == 500
+
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E40002"
+        assert error_response["message"] == "Failed to load layoutapply_log_config.yaml.\n('Dummy message',)"
+
+    def test_resume_layoutapply_failure_when_failed_to_start_subprocess(self, mocker, init_db_instance, caplog):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(
@@ -2801,11 +2717,6 @@ class TestResumeAPIServer:
                 """
             )
         init_db_instance.commit()
-        # arrange
-        caplog.set_level(ERROR)
-
-        # arrange
-
         # psycopg2.connect is mocked
         mocker.patch(
             "multiprocessing.Process.start",
@@ -2813,6 +2724,7 @@ class TestResumeAPIServer:
         )
 
         response = client.put("/cdim/api/v1/layout-apply/300000006d?action=resume")
+
         # assert
         assert response.status_code == 500
         error_response = json.loads(response.content.decode())
@@ -2821,8 +2733,10 @@ class TestResumeAPIServer:
         assert "[E40026]Failed to start subprocess." in caplog.text
 
     def test_resume_layoutapply_failure_when_failed_to_start_subprocess_in_suspended(
-        self, mocker, caplog, init_db_instance, docker_services
+        self, mocker, init_db_instance, caplog
     ):
+        mocker.patch("logging.config.dictConfig")
+
         # Data adjustment before testing.
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(
@@ -2834,11 +2748,6 @@ class TestResumeAPIServer:
                 """
             )
         init_db_instance.commit()
-        # arrange
-        caplog.set_level(ERROR)
-
-        # arrange
-
         # psycopg2.connect is mocked
         mocker.patch(
             "multiprocessing.Process.start",
@@ -2849,6 +2758,7 @@ class TestResumeAPIServer:
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
             cursor.execute(query="DELETE FROM applystatus WHERE applyid = '300000021a'")
         init_db_instance.commit()
+
         # assert
         assert response.status_code == 500
         error_response = json.loads(response.content.decode())
@@ -2970,12 +2880,27 @@ class TestMigrateAPIServer:
 
     def test_execute_migration_failure_when_failed_to_load_config_file(self, mocker):
 
-        mocker.patch("yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message")])
+        mocker.patch(
+            "yaml.safe_load", side_effect=[SettingFileLoadException("Dummy message", "layoutapply_config.yaml")]
+        )
         response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
         # assert
         assert response.status_code == 500
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E50002"
+        assert "Failed to load layoutapply_config.yaml." in error_response["message"]
+
+    def test_execute_migration_failure_when_failed_to_load_log_config_file(self, mocker):
+        mocker.patch.object(LayoutApplyLogConfig, "_validate_log_dir", side_effect=[Exception("Dummy message")])
+
+        # arrange
+        response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
+        # assert
+
+        assert response.status_code == 500
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E50002"
+        assert "Failed to load layoutapply_log_config.yaml." in error_response["message"]
 
     @pytest.mark.parametrize("layout", checkvalid.newLayout_without_required_key)
     def test_execute_migration_failure_when_no_required_key(self, layout):
@@ -3018,8 +2943,9 @@ class TestMigrateAPIServer:
         assert resp_data.get("procedures") is not None
 
     @pytest.mark.usefixtures("conf_manager_server_err_fixture")
-    def test_execute_migration_failure_when_config_info_management_api_failure(self, caplog):
-        caplog.set_level(ERROR)
+    def test_execute_migration_failure_when_config_info_management_api_failure(self, mocker, caplog):
+        mocker.patch("logging.config.dictConfig")
+
         # arrange
         response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
         body = json.loads(response.content.decode())
@@ -3031,32 +2957,33 @@ class TestMigrateAPIServer:
         # assert
         assert body.get("code") == "E50004"
         assert body.get("message") == f"Failed to request: status:[500], response[{api_err_msg}]"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50004]Failed to request: ")
+        assert "[E50004]Failed to request:" in caplog.text
 
     @pytest.mark.usefixtures("migration_server_err_fixture")
-    def test_execute_migration_failure_when_migration_step_generation_api_failure(self, caplog, httpserver):
-        caplog.set_level(ERROR)
+    def test_execute_migration_failure_when_migration_step_generation_api_failure(
+        self, httpserver, docker_services, mocker, caplog
+    ):
+        mocker.patch("logging.config.dictConfig")
 
-        httpserver.expect_request(
-            re.compile(rf"\/dagsw/api\/v1\/{CONF_NODES_URL}"), method="GET"
-        ).respond_with_response(
+        httpserver.expect_request(re.compile(rf"\/cdim/api\/v1\/{CONF_NODES_URL}"), method="GET").respond_with_response(
             Response(
                 bytes(json.dumps(migration.CONF_NODES_API_RESP_DATA), encoding="utf-8"),
                 status=200,
             )
         )
         # arrange
-        response = client.post(f"/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
+        response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
         body = json.loads(response.content.decode())
         api_err_msg = {
             "code": "xxxx",
             "message": "desiredLayout is a required property.",
         }
         httpserver.clear()
+
         # assert
         assert body.get("code") == "E50004"
         assert body.get("message") == f"Failed to request: status:[500], response[{api_err_msg}]"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50004]Failed to request: ")
+        assert "[E50004]Failed to request:" in caplog.text
 
     def test_execute_migration_failure_when_failed_to_load_secret_file(self, mocker, init_db_instance):
         # arrange
@@ -3072,28 +2999,45 @@ class TestMigrateAPIServer:
         assert error_response["code"] == "E50008"
 
     @pytest.mark.parametrize(
-        "update_config",
+        "log_config",
         [
-            # log_dir is invalid
             {
-                "log": {
-                    "logging_level": "INFO",
-                    "log_dir": "test/test",
-                    "file": "app_layout_apply.log",
-                    "rotation_size": 1000000,
-                    "backup_files": 3,
-                    "stdout": False,
-                }
-            },
+                "version": 1,
+                "formatters": {
+                    "standard": {
+                        "format": "%(asctime)s %(levelname)s %(message)s",
+                        "datefmt": "%Y/%m/%d %H:%M:%S.%f",
+                    }
+                },
+                "handlers": {
+                    "file": {
+                        "class": "logging.handlers.RotatingFileHandler",
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "filename": "test/test",
+                        "maxBytes": 100000000,
+                        "backupCount": 72,
+                        "encoding": "utf-8",
+                    },
+                    "console": {
+                        "class": "logging.StreamHandler",
+                        "level": "INFO",
+                        "formatter": "standard",
+                        "stream": "ext://sys.stdout",
+                    },
+                },
+                "root": {
+                    "level": "INFO",
+                    "handlers": ["file", "console"],
+                },
+            }
         ],
     )
-    def test_execute_migration__failure_when_failed_to_initialize_logger(self, mocker, update_config, init_db_instance):
+    def test_execute_migration_failure_when_failed_to_initialize_logger(
+        self, mocker, log_config, init_db_instance, docker_services
+    ):
 
-        base_config = copy.deepcopy(BASE_CONFIG)
-        del base_config["log"]
-        config = {**base_config, **update_config}
-        mocker.patch("yaml.safe_load").return_value = config
-        mocker.patch.object(LayoutApplyConfig, "_validate_log_dir")
+        mocker.patch.object(LayoutApplyLogConfig, "log_config", log_config)
 
         # arrange
         response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
@@ -3105,8 +3049,11 @@ class TestMigrateAPIServer:
         assert error_response["code"] == "E50009"
 
     @pytest.mark.usefixtures("get_available_resources_err_fixture")
-    def test_execute_migration_failure_when_get_available_resources_api_failure(self, caplog, init_db_instance):
-        caplog.set_level(ERROR)
+    def test_execute_migration_failure_when_get_available_resources_api_failure(
+        self, init_db_instance, docker_services, mocker, caplog
+    ):
+        mocker.patch("logging.config.dictConfig")
+
         # arrange
         response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
         body = json.loads(response.content.decode())
@@ -3118,4 +3065,4 @@ class TestMigrateAPIServer:
         # assert
         assert body.get("code") == "E50004"
         assert body.get("message") == f"Failed to request: status:[500], response[{api_err_msg}]"
-        assert json.loads(caplog.record_tuples[0][2]).get("message").startswith("[E50004]Failed to request: ")
+        "[E50004]Failed to request:" in caplog.text

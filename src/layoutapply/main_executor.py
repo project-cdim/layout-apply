@@ -19,8 +19,8 @@ import pickle
 import sys
 from dataclasses import asdict
 
-from layoutapply.cdimlogger import Logger
-from layoutapply.setting import LayoutApplyConfig
+from layoutapply.common.logger import Logger
+from layoutapply.setting import LayoutApplyLogConfig
 
 sys.path.append(os.path.abspath("."))
 
@@ -41,7 +41,7 @@ def exec_run():
         os.remove(file_path)
     except Exception as err:  # pylint: disable=W0703
         exc = FailedStartSubprocessException(err)
-        Logger(**LayoutApplyConfig().logger_args).error(f"[E40026]{exc.message}")
+        Logger(LayoutApplyLogConfig().log_config).error(f"[E40026]{exc.message}")
         sys.exit(exc.exit_code)
 
     run(**asdict(args))
