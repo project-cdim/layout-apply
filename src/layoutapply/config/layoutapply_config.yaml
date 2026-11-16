@@ -1,0 +1,116 @@
+---
+log:
+ log_dir: ./
+ logging_level: DEBUG
+layout_apply:
+ host: 0.0.0.0
+ port: 8003
+ request:
+  max_workers: 2
+db:
+ dbname: ApplyStatusDB
+ user: user01
+ host: localhost
+ port: 5432
+get_information:
+ host: localhost
+ port: 48889
+ uri: dagsw/api/v1
+ specs:
+  poweroff:
+   polling:
+    count: 15
+    interval: 6
+  connect:
+   polling:
+    count: 15
+    interval: 6
+  disconnect:
+   polling:
+    count: 15
+    interval: 6
+  timeout: 15
+hardware_control:
+ host: localhost
+ port: 48889
+ uri: dagsw/api/v1
+ disconnect:
+  retry:
+   targets:
+    - status_code: 503
+      code: ER005BAS001
+      interval: 2
+      max_count: 2
+    - status_code: 503
+      code: ER005BAS002
+      interval: 2
+      max_count: 2
+   default:
+    interval: 2
+    max_count: 2
+  timeout: 30
+ connect:
+  retry:
+   targets:
+    - status_code: 503
+      code: ER005BAS001
+      interval: 2
+      max_count: 2
+    - status_code: 503
+      code: ER005BAS002
+      interval: 2
+      max_count: 2
+   default:
+    interval: 2
+    max_count: 2
+  timeout: 30
+ poweroff:
+  retry:
+   targets:
+    - status_code: 503
+      code: ER005BAS001
+      interval: 2
+      max_count: 2
+    - status_code: 503
+      code: ER005BAS002
+      interval: 2
+      max_count: 2
+   default:
+    interval: 2
+    max_count: 2
+  timeout: 30
+ poweron:
+  retry:
+   targets:
+    - status_code: 503
+      code: ER005BAS001
+      interval: 2
+      max_count: 2
+    - status_code: 503
+      code: ER005BAS002
+      interval: 2
+      max_count: 2
+   default:
+    interval: 2
+    max_count: 2
+  timeout: 30
+ isosboot:
+  polling:
+   count: 15
+   interval: 6
+   skip:
+    - status_code: 400
+      code: EF003BAS010
+  request:
+   timeout: 2
+  timeout: 30
+migration_procedure_generator:
+ host: localhost
+ port: 48889
+ uri: dagsw/api/v1
+ timeout: 30
+configuration_manager:
+ host: localhost
+ port: 48889
+ uri: dagsw/api/v1
+ timeout: 30
