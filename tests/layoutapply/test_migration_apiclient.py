@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -64,6 +64,7 @@ def get_migration_layout() -> dict:
                         "memory": {"deviceIDs": ["A4D1A195-4A54-11EF-A1DC-000C29C8CA82"]},
                         "storage": {"deviceIDs": ["895DFB43-68CD-41D6-8996-EAC8D1EA1E3F"]},
                         "networkInterface": {"deviceIDs": ["5DFB4893-C16D-4968-89D6-8D1EAECEA31F"]},
+                        "gpu": [{"deviceID": "f6d7c8a9-b0c1-2d3e-4f5a-6b7c8d9e0f1a"}],
                     }
                 },
                 {
@@ -89,9 +90,9 @@ class TestMigrationClient:
 
         uri = config.migration_procedure.get("uri")
 
-        httpserver.expect_request(re.compile(f"\/{uri}\/migration-procedures"), method="POST").respond_with_response(
-            Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200)
-        )
+        httpserver.expect_request(
+            re.compile(f"\/{uri}\/migration-procedures"), method="POST", json=get_migration_layout
+        ).respond_with_response(Response(bytes(json.dumps(MIGRATION_API_RESP_DATA), encoding="utf-8"), status=200))
 
         code, body = api.execute()
         httpserver.clear()

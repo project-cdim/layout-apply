@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -12,6 +12,10 @@
 # License for the specific language governing permissions and limitations
 #  under the License.
 """Test of the API Client Package"""
+
+# Note: This feature is experimental and requires an additional
+# component that is not currently available in the public release.
+# This API may change in future versions.
 
 
 import io
@@ -41,6 +45,7 @@ from tests.layoutapply.conftest import (
     WORKFLOW_MANAGER_PORT,
     WORKFLOW_MANAGER_URI,
 )
+from tests.layoutapply.test_data import procedure
 
 
 class TestServiceAPIBase:
@@ -66,6 +71,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -126,6 +133,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -170,6 +179,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -259,6 +270,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -350,6 +363,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -405,6 +420,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -457,6 +474,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -522,6 +541,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -574,6 +595,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": workflow_manager_conf,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -627,6 +650,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -678,6 +703,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -730,6 +757,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -813,6 +842,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -897,6 +928,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -968,6 +1001,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1053,6 +1088,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1113,6 +1150,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1173,6 +1212,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1230,6 +1271,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1295,6 +1338,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
 
@@ -1341,6 +1386,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1401,6 +1448,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1446,6 +1495,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1535,6 +1586,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1626,6 +1679,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1684,6 +1739,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1739,6 +1796,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1806,6 +1865,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1858,6 +1919,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": workflow_manager_conf,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1914,6 +1977,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -1969,6 +2034,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2021,6 +2088,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2104,6 +2173,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2188,6 +2259,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2259,6 +2332,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2344,6 +2419,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2404,6 +2481,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2464,6 +2543,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2521,6 +2602,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2586,6 +2669,8 @@ class TestServiceAPIBase:
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
                 "applyID": applyID,
+                "features_conf": config.features,
+                "server_connection_conf": config.server_connection,
             }
         )
 
@@ -2636,6 +2721,8 @@ class TestServiceAPIBase:
             **{
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
 
@@ -2690,6 +2777,8 @@ class TestServiceAPIBase:
             **{
                 "workflow_manager_conf": config.workflow_manager,
                 "logger_args": LayoutApplyLogConfig().log_config,
+                "server_connection_conf": config.server_connection,
+                "features_conf": config.features,
             }
         )
         hostCpuId = str(uuid4())
@@ -2707,3 +2796,84 @@ class TestServiceAPIBase:
         result = api_obj.execute(paylod)
         # assert
         assert result["code"] == 503
+
+    @pytest.mark.parametrize("action", [("start"), ("stop")])
+    def test_service_skip_depending_on_the_setting(self, capsys, action, init_db_instance):
+        # arrange
+        config = self.config
+        features_workflow_manager = {"workflow_manager": False}
+
+        applyID = str(uuid4())
+        api_obj: StartAPI = StartAPI(
+            **{
+                "workflow_manager_conf": config.workflow_manager,
+                "logger_args": LayoutApplyLogConfig().log_config,
+                "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": features_workflow_manager,
+            }
+        )
+        hostCpuId = str(uuid4())
+        targetRequestInstanceID = str(uuid4())
+        paylod = Procedure(
+            **{
+                "operationID": 1,
+                "operation": action,
+                "targetCPUID": hostCpuId,
+                "targetRequestInstanceID": targetRequestInstanceID,  # targetRequestInstanceID → targetServiceID
+                "dependencies": [],
+            }
+        )
+
+        # act
+        execute_result = api_obj.execute(paylod)
+        result: Details = execute_result[ApiExecuteResultIdx.DETAIL]
+
+        # assert
+        assert result.operationID == 1
+        skip_message = f"Operation {action} is skipped because features.workflow_manager is set to False"
+        assert result.responseBody == {"message": skip_message}
+        assert result.status == "COMPLETED"
+        assert hasattr(result, "startedAt")
+        assert hasattr(result, "endedAt")
+
+    def test_service_skip_without_workflow_manager_config(self, capsys, init_db_instance):
+        # arrange
+        config = self.config
+        features_workflow_manager = {"workflow_manager": False}
+        del config._config["workflow_manager"]
+
+        applyID = str(uuid4())
+        api_obj: StartAPI = StartAPI(
+            **{
+                "workflow_manager_conf": config.workflow_manager,
+                "logger_args": LayoutApplyLogConfig().log_config,
+                "applyID": applyID,
+                "server_connection_conf": config.server_connection,
+                "features_conf": features_workflow_manager,
+            }
+        )
+        hostCpuId = str(uuid4())
+        targetRequestInstanceID = str(uuid4())
+        action = "start"
+        paylod = Procedure(
+            **{
+                "operationID": 1,
+                "operation": action,
+                "targetCPUID": hostCpuId,
+                "targetRequestInstanceID": targetRequestInstanceID,  # targetRequestInstanceID → targetServiceID
+                "dependencies": [],
+            }
+        )
+
+        # act
+        execute_result = api_obj.execute(paylod)
+        result: Details = execute_result[ApiExecuteResultIdx.DETAIL]
+
+        # assert
+        assert result.operationID == 1
+        skip_message = f"Operation {action} is skipped because features.workflow_manager is set to False"
+        assert result.responseBody == {"message": skip_message}
+        assert result.status == "COMPLETED"
+        assert hasattr(result, "startedAt")
+        assert hasattr(result, "endedAt")

@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -13,6 +13,7 @@
 #  under the License.
 """Packages related to database operations"""
 
+import copy
 import json
 import time
 from dataclasses import dataclass
@@ -765,22 +766,27 @@ class DbAccess:
             ("resumedat", "resumedAt"),
         ]
 
+        updated_status = copy.deepcopy(applystatus)
         for key, value in key_value_pairs_to_rename:
+            current_value = applystatus.get(key)
             # Replace only the fields with values in the database to filter the output items.
-            if (
-                applystatus.get(key)
-                or (key == "executerollback" and applystatus.get(key) is False)
-                or (key == "applyresult" and applystatus.get(key) == [])
-            ):
-                applystatus[value] = applystatus[key]
-                del applystatus[key]
+            should_rename = (
+                current_value is not None
+                or (key == "executerollback" and current_value is False)
+                or (key == "applyresult" and current_value == [])
+            )
+
+            if should_rename:
+                updated_status[value] = current_value
+                updated_status.pop(key, None)
 
         for key, value in date_keys_to_rename:
-            if applystatus.get(key):
-                applystatus[value] = applystatus.get(key).strftime(DATETIME_STR_FORMAT)
-                del applystatus[key]
+            current_value = applystatus.get(key)
+            if current_value:
+                updated_status[value] = current_value.strftime(DATETIME_STR_FORMAT)
+                updated_status.pop(key, None)
 
-        return applystatus
+        return updated_status
 
     def _create_where_query_of_get(
         self,

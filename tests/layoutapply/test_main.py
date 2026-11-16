@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -235,7 +235,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -251,7 +251,7 @@ class TestMain:
                         assert "queryParameter" not in detail
                         assert detail["requestBody"] == {
                             "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert 200 == detail["statusCode"]
                         assert detail["startedAt"] is not None
@@ -365,7 +365,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -381,7 +381,7 @@ class TestMain:
                         assert "queryParameter" not in detail
                         assert detail["requestBody"] == {
                             "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert 200 == detail["statusCode"]
                         assert detail["startedAt"] is not None
@@ -495,7 +495,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -511,7 +511,7 @@ class TestMain:
                         assert "queryParameter" not in detail
                         assert detail["requestBody"] == {
                             "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert 200 == detail["statusCode"]
                         assert detail["startedAt"] is not None
@@ -603,7 +603,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -619,7 +619,7 @@ class TestMain:
                         assert "queryParameter" not in detail
                         assert detail["requestBody"] == {
                             "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert 200 == detail["statusCode"]
                         assert detail["startedAt"] is not None
@@ -849,7 +849,7 @@ class TestMain:
                             assert "PUT" == detail["method"]
                             assert detail["requestBody"] == {
                                 "action": "connect",
-                                "deviceID": procedure["targetDeviceID"],
+                                "destinationDeviceID": procedure["targetDeviceID"],
                             }
                             assert "queryParameter" not in detail
                             assert 500 == detail["statusCode"]
@@ -867,7 +867,7 @@ class TestMain:
                             assert "PUT" == detail["method"]
                             assert detail["requestBody"] == {
                                 "action": "disconnect",
-                                "deviceID": procedure["targetDeviceID"],
+                                "destinationDeviceID": procedure["targetDeviceID"],
                             }
                             assert "queryParameter" not in detail
                             assert 500 == detail["statusCode"]
@@ -1046,14 +1046,14 @@ class TestMain:
                         "operationID": 5,
                         "operation": "start",
                         "targetCPUID": str(uuid4()),
-                        "targetServiceID": str(uuid4()),
+                        "targetRequestInstanceID": str(uuid4()),
                         "dependencies": [4],
                     },
                     {
                         "operationID": 6,
-                        "operation": "shutdown",
+                        "operation": "stop",
                         "targetCPUID": str(uuid4()),
-                        "targetServiceID": str(uuid4()),
+                        "targetRequestInstanceID": str(uuid4()),
                         "dependencies": [5],
                     },
                 ],
@@ -1091,14 +1091,14 @@ class TestMain:
                         "operationID": 5,
                         "operation": "start",
                         "targetCPUID": str(uuid4()),
-                        "targetServiceID": str(uuid4()),
+                        "targetRequestInstanceID": str(uuid4()),
                         "dependencies": [4],
                     },
                     {
                         "operationID": 6,
-                        "operation": "shutdown",
+                        "operation": "stop",
                         "targetCPUID": str(uuid4()),
-                        "targetServiceID": str(uuid4()),
+                        "targetRequestInstanceID": str(uuid4()),
                         "dependencies": [5],
                     },
                 ],
@@ -1710,7 +1710,7 @@ class TestMain:
 
         assert [2, 3, 4] == _get_skip_ids(proc_list, failed_ids)
 
-    def test_create_task_create_task(self):
+    def test_create_task_create_task(self, docker_services):
         with ProcessPoolExecutor() as executor:
             config = LayoutApplyConfig()
             config.workflow_manager["timeout"] = 3
@@ -1751,7 +1751,7 @@ class TestMain:
             procedure = Procedure(
                 operationID=1,
                 targetCPUID=uuid4(),
-                targetServiceID=uuid4(),
+                targetRequestInstanceID=uuid4(),
                 operation=Operation.START,
                 dependencies=[1],
             )
@@ -1760,7 +1760,7 @@ class TestMain:
             procedure = Procedure(
                 operationID=1,
                 targetCPUID=uuid4(),
-                targetServiceID=uuid4(),
+                targetRequestInstanceID=uuid4(),
                 operation=Operation.STOP,
                 dependencies=[1],
             )
@@ -1822,7 +1822,7 @@ class TestMain:
                     "operationID": 1,
                     "operation": "start",
                     "targetCPUID": str(uuid4()),
-                    "targetServiceID": str(uuid4()),
+                    "targetRequestInstanceID": str(uuid4()),
                     "dependencies": [],
                 },
                 Operation.STOP,
@@ -1832,7 +1832,7 @@ class TestMain:
                     "operationID": 1,
                     "operation": "stop",
                     "targetCPUID": str(uuid4()),
-                    "targetServiceID": str(uuid4()),
+                    "targetRequestInstanceID": str(uuid4()),
                     "dependencies": [],
                 },
                 Operation.START,
@@ -3850,7 +3850,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -3865,7 +3865,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -3944,7 +3944,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "connect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -3959,7 +3959,7 @@ class TestMain:
                         assert "PUT" == detail["method"]
                         assert detail["requestBody"] == {
                             "action": "disconnect",
-                            "deviceID": procedure["targetDeviceID"],
+                            "destinationDeviceID": procedure["targetDeviceID"],
                         }
                         assert "queryParameter" not in detail
                         assert 200 == detail["statusCode"]
@@ -4198,7 +4198,7 @@ class TestMain:
                             assert "PUT" == detail["method"]
                             assert detail["requestBody"] == {
                                 "action": "connect",
-                                "deviceID": procedure["targetDeviceID"],
+                                "destinationDeviceID": procedure["targetDeviceID"],
                             }
                             assert "queryParameter" not in detail
                             assert 500 == detail["statusCode"]
@@ -4216,7 +4216,7 @@ class TestMain:
                             assert "PUT" == detail["method"]
                             assert detail["requestBody"] == {
                                 "action": "disconnect",
-                                "deviceID": procedure["targetDeviceID"],
+                                "destinationDeviceID": procedure["targetDeviceID"],
                             }
                             assert "queryParameter" not in detail
                             assert 500 == detail["statusCode"]

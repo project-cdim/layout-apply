@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -132,6 +132,9 @@ BASE_CONFIG = {
         "port": 3500,
         "pubsub": "layout_apply_apply",
         "topic": "layout_apply_apply.completed",
+    },
+    "features": {
+        "workflow_manager": True,
     },
 }
 
@@ -1188,6 +1191,50 @@ class TestLayoutApplyConfig:
                 "host": "localhost",
                 "port": 5435,
             },
+            "get_information": {
+                "host": "localhost",
+                "port": 48889,
+                "uri": "api/v1",
+                "specs": {
+                    "poweroff": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "connect": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "disconnect": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "timeout": 10,
+                },
+            },
+            "workflow_manager": {
+                "host": "0.0.0.0",
+                "port": 8008,
+                "uri": "cdim/api/v1",
+                "extended-procedure": {
+                    "retry": {
+                        "default": {
+                            "interval": 5,
+                            "max_count": 5,
+                        },
+                    },
+                    "polling": {
+                        "count": 5,
+                        "interval": 5,
+                    },
+                },
+                "timeout": 30,
+            },
             "hardware_control": {
                 "host": "localhost",
                 "port": 8888,
@@ -1271,6 +1318,12 @@ class TestLayoutApplyConfig:
                 "uri": "cdim/api/v1",
                 "timeout": 30,
             },
+            "message_broker": {
+                "host": "localhost",
+                "port": 3500,
+                "pubsub": "layout_apply_apply",
+                "topic": "layout_apply_apply.completed",
+            },
         }
         # unset values will default.
         mocker.patch("yaml.safe_load").return_value = config
@@ -1330,6 +1383,32 @@ class TestLayoutApplyConfig:
                 "host": "localhost",
                 "port": 5435,
             },
+            "get_information": {
+                "host": "localhost",
+                "port": 48889,
+                "uri": "api/v1",
+                "specs": {
+                    "poweroff": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "connect": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "disconnect": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "timeout": 10,
+                },
+            },
             "workflow_manager": {
                 "host": "localhost",
                 "port": 8008,
@@ -1370,6 +1449,12 @@ class TestLayoutApplyConfig:
                 "uri": "cdim/api/v1",
                 "timeout": 30,
             },
+            "message_broker": {
+                "host": "localhost",
+                "port": 3500,
+                "pubsub": "layout_apply_apply",
+                "topic": "layout_apply_apply.completed",
+            },
         }
         # all values will default.
         mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
@@ -1389,6 +1474,32 @@ class TestLayoutApplyConfig:
                 "password": "P@ssw0rd",
                 "host": "localhost",
                 "port": 5435,
+            },
+            "get_information": {
+                "host": "localhost",
+                "port": 48889,
+                "uri": "api/v1",
+                "specs": {
+                    "poweroff": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "connect": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "disconnect": {
+                        "polling": {
+                            "count": 5,
+                            "interval": 1,
+                        },
+                    },
+                    "timeout": 10,
+                },
             },
             "workflow_manager": {
                 "host": "localhost",
@@ -1433,6 +1544,12 @@ class TestLayoutApplyConfig:
                 "port": 48889,
                 "uri": "cdim/api/v1",
                 "timeout": 30,
+            },
+            "message_broker": {
+                "host": "localhost",
+                "port": 3500,
+                "pubsub": "layout_apply_apply",
+                "topic": "layout_apply_apply.completed",
             },
         }
         # all values will default.
@@ -2472,7 +2589,7 @@ class TestLayoutApplyConfig:
                         {"status_code": 400, "code": "EF003BAS010"},
                     ],
                 },
-                "request": {"timeout": 4},
+                "request": {"timeout": 601},
                 "timeout": 10,
             },
             # timeout is None
@@ -3589,3 +3706,136 @@ class TestLayoutApplyConfig:
         mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
         with pytest.raises(Exception):
             LayoutApplyConfig().server_connection
+
+
+    @pytest.mark.parametrize(
+        "update_config",
+        [
+            {
+                "features": {
+                    "workflow_managerr": True,
+                },
+            },
+            {},
+        ],
+    )
+    def test_setting_config_default_value_applied_when_features_config(self, mocker, update_config):
+        config = copy.deepcopy(BASE_CONFIG)
+        if "features" in update_config:
+            config["features"] = update_config["features"]
+        else:
+            del config["features"]
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
+        features_conf = LayoutApplyConfig().features
+        assert features_conf.get("workflow_manager") is False
+
+    @pytest.mark.parametrize(
+        "false_pattern",
+        [
+            "no_features", "no_features.workflow_manager", "specify_False"
+        ],
+    )
+    def test_setting_success_when_features_workflow_manager_false_pattern_without_workflow_manager_config(self, mocker, false_pattern):
+        config = copy.deepcopy(BASE_CONFIG)
+        del config["workflow_manager"]
+        if false_pattern == "no_features":
+            del config["features"]
+        elif false_pattern == "no_features.workflow_manager":
+            del config["features"]["workflow_manager"]
+        else:
+            config["features"]["workflow_manager"] = False
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
+
+        features_conf = LayoutApplyConfig().features
+        assert features_conf.get("workflow_manager") is False
+
+    def test_setting_failure_when_features_workflow_manager_true_without_workflow_manager_config(self, mocker):
+        config = copy.deepcopy(BASE_CONFIG)
+        del config["workflow_manager"]
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
+        with pytest.raises(Exception):
+            LayoutApplyConfig().features
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # workflow_manager is no existent
+            "",
+            # host is no existent
+            {
+                "workflow_manager": {
+                    "port": 48889,
+                    "uri": "api/v1",
+                },
+            },
+            # port is no existent
+            {
+                "workflow_manager": {
+                    "host": "localhost",
+                    "uri": "api/v1",
+                },
+            },
+            # uri is no existent
+            {
+                "workflow_manager": {
+                    "host": "localhost",
+                    "port": 48889,
+                },
+            },
+        ],
+    )
+    def test_setting_failure_when_invalid_workflow_manager_config(self, mocker, update_confg):
+        config = copy.deepcopy(BASE_CONFIG)
+        del config["workflow_manager"]
+        if update_confg == "":
+            pass
+        else:
+            config["workflow_manager"] = update_confg["workflow_manager"]
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        with pytest.raises(Exception):
+            LayoutApplyConfig().workflow_manager
+
+    @pytest.mark.parametrize(
+        "update_confg",
+        [
+            # workflow_manager is no existent
+            "",
+            # host is no existent
+            {
+                "workflow_manager": {
+                    "port": 48889,
+                    "uri": "api/v1",
+                },
+            },
+            # port is no existent
+            {
+                "workflow_manager": {
+                    "host": "localhost",
+                    "uri": "api/v1",
+                },
+            },
+            # uri is no existent
+            {
+                "workflow_manager": {
+                    "host": "localhost",
+                    "port": 48889,
+                },
+            },
+        ],
+    )
+    def test_setting_success_when_features_workflow_manager_false_without_workflow_manager_config_pattern(self, mocker, update_confg):
+        config = copy.deepcopy(BASE_CONFIG)
+        del config["features"]
+        del config["workflow_manager"]
+        if update_confg == "":
+            pass
+        else:
+            config["workflow_manager"] = update_confg["workflow_manager"]
+        mocker.patch("yaml.safe_load").side_effect = [config, LOG_BASE_CONFIG]
+        mocker.patch("requests.get")
+
+        features_conf = LayoutApplyConfig().features
+        assert features_conf.get("workflow_manager") is False

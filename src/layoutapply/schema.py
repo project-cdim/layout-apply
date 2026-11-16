@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -147,7 +147,6 @@ config = {
         },
         "pollingschema": {
             "type": "object",
-            "required": ["polling"],
             "properties": {
                 # Definition of polling for the Device Information Retrieval API
                 "polling": {
@@ -171,12 +170,42 @@ config = {
         },
     },
     "type": "object",
-    "required": [
-        "layout_apply",
-        "hardware_control",
-        "configuration_manager",
-        "migration_procedure_generator",
-    ],
+    "if": {
+        "properties": {
+            "features": {
+                "type": "object",
+                "properties": {"workflow_manager": {"const": True}},
+                "required": ["workflow_manager"],
+            }
+        },
+        "required": ["features"],
+    },
+    "then": {
+        "required": [
+            "layout_apply",
+            "get_information",
+            "workflow_manager",
+            "hardware_control",
+            "configuration_manager",
+            "migration_procedure_generator",
+            "message_broker",
+        ],
+        "properties": {
+            "workflow_manager": {
+                "required": ["host", "port", "uri"],
+            },
+        },
+    },
+    "else": {
+        "required": [
+            "layout_apply",
+            "get_information",
+            "hardware_control",
+            "configuration_manager",
+            "migration_procedure_generator",
+            "message_broker",
+        ],
+    },
     "properties": {
         # Configuration LayoutApply related settings
         "layout_apply": {
@@ -229,7 +258,7 @@ config = {
         # Configuration get_information related settings
         "get_information": {
             "type": "object",
-            "required": ["host", "port", "uri", "specs"],
+            "required": ["host", "port", "uri"],
             "properties": {
                 # IP/HOST
                 "host": {
@@ -245,7 +274,6 @@ config = {
                 },
                 "specs": {
                     "type": "object",
-                    "required": ["poweroff", "connect", "disconnect"],
                     "properties": {
                         # Definition of execution after poweroff
                         "poweroff": {
@@ -272,12 +300,6 @@ config = {
         # Configuration workflow_manager related settings
         "workflow_manager": {
             "type": "object",
-            "required": [
-                "host",
-                "port",
-                "uri",
-                "extended-procedure",
-            ],
             "properties": {
                 # IP/HOST
                 "host": {"type": "string"},
@@ -287,11 +309,9 @@ config = {
                 "uri": {"type": "string"},
                 "extended-procedure": {
                     "type": "object",
-                    "required": ["polling", "retry"],
                     "properties": {
                         "retry": {
                             "type": "object",
-                            "required": ["default"],
                             "properties": {
                                 "default": {
                                     "type": ["object", "null"],
@@ -323,7 +343,7 @@ config = {
         # Configuration hardware_control related settings
         "hardware_control": {
             "type": "object",
-            "required": ["host", "port", "uri", "isosboot"],
+            "required": ["host", "port", "uri"],
             "properties": {
                 # IP/HOST
                 "host": {
@@ -356,7 +376,6 @@ config = {
                 # Settings related to the operation type "isosboot"
                 "isosboot": {
                     "type": "object",
-                    "required": ["polling"],
                     "properties": {
                         # Definition regarding polling for isOSboot API
                         "polling": {
@@ -379,7 +398,6 @@ config = {
                                     "type": "array",
                                     "items": {
                                         "type": "object",
-                                        "required": ["status_code", "code"],
                                         "properties": {
                                             # HTTP status codes to skip
                                             "status_code": {
@@ -402,7 +420,7 @@ config = {
                                 "timeout": {
                                     "type": ["integer", "null"],
                                     "minimum": 1,
-                                    "maximum": 3,
+                                    "maximum": 600,
                                 },
                             },
                         },
@@ -490,6 +508,16 @@ config = {
                 # topic
                 "topic": {
                     "type": "string",
+                },
+            },
+        },
+        # Configuration features related settings
+        "features": {
+            "type": "object",
+            "properties": {
+                # workflow_manager value
+                "workflow_manager": {
+                    "type": "boolean",
                 },
             },
         },
@@ -619,6 +647,8 @@ device_information = {
                 "GRAPHICCONTROLLER",
                 "VIRTUALMEDIA",
                 "SWITCH",
+                "SOURCEFABRICADAPTER",
+                "DESTINATIONFABRICADAPTER",
             ],
         },
         # Current power state of the processor
@@ -705,7 +735,16 @@ desiredLayout = {
                         "type": "object",
                         "additionalProperties": False,
                         "patternProperties": {
-                            "^[0-9a-zA-Z]+$": {
+                            "^(g|G)(p|P)(u|U)$": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {"deviceID": {"type": "string"}},
+                                    "required": ["deviceID"],
+                                    "additionalProperties": True,
+                                },
+                            },
+                            "^(?!(g|G)(p|P)(u|U)$)[0-9a-zA-Z]+$": {
                                 "type": "object",
                                 "properties": {
                                     "deviceIDs": {
@@ -715,7 +754,7 @@ desiredLayout = {
                                     }
                                 },
                                 "additionalProperties": False,
-                            }
+                            },
                         },
                     },
                 },
@@ -825,7 +864,11 @@ extended_procedure_schema = {
     "properties": {
         "status": {
             "type": "string",
-            "enum": ["IN_PROGRESS", "COMPLETED", "FAILED"],
+            "enum": [
+                "IN_PROGRESS",
+                "COMPLETED",
+                "FAILED",
+            ],
         },
     },
 }

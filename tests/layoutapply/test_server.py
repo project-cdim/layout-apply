@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -13,6 +13,7 @@
 #  under the License.
 """Test for api"""
 
+import copy
 import json
 import logging
 import re
@@ -218,6 +219,15 @@ get_list_assert_target = {
     ],
 }
 
+def _rename_gpu_key(migration_in_data: dict, new_key: str) -> dict:
+    data = copy.deepcopy(migration_in_data)
+
+    nodes = data.get("desiredLayout", {}).get("nodes", [])
+    for node in nodes:
+        device = node.get("device")
+        if "gpu" in device:
+            device[new_key] = device.pop("gpu")
+    return data
 
 @pytest.mark.usefixtures("httpserver_listen_address")
 class TestAPIServer:
@@ -663,8 +673,13 @@ class TestCancelAPIServer:
         process_start = str(proc_obj.create_time())
         apply_id = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            query_str = f"INSERT INTO applystatus (applyid, status, processid, executioncommand, processstartedat) VALUES ('{apply_id}', '{Result.IN_PROGRESS}', {proc.pid}, '{"".join(execution_cmd)}', '{process_start}')"
-            cursor.execute(query=query_str)
+            query_str = """INSERT INTO applystatus
+                (applyid, status, processid, executioncommand, processstartedat)
+                VALUES (%s, %s, %s, %s, %s)"""
+            cursor.execute(
+                query=query_str,
+                vars=(apply_id, Result.IN_PROGRESS, proc.pid, "".join(execution_cmd), process_start)
+            )
         init_db_instance.commit()
         # arrange
 
@@ -845,8 +860,13 @@ class TestCancelAPIServer:
         # Register data that does not match the execution process in the database.
         apply_id = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            query_str = f"INSERT INTO applystatus (applyid, status, processid, executioncommand, processstartedat) VALUES ('{apply_id}', '{Result.IN_PROGRESS}', {proc.pid}, '{register_executioncommand}', '{register_processstartedat}')"
-            cursor.execute(query=query_str)
+            query_str = """INSERT INTO applystatus
+                (applyid, status, processid, executioncommand, processstartedat)
+                VALUES (%s, %s, %s, %s, %s)"""
+            cursor.execute(
+                query=query_str,
+                vars=(apply_id, Result.IN_PROGRESS, proc.pid, register_executioncommand, register_processstartedat)
+            )
         init_db_instance.commit()
         # arrange
 
@@ -880,8 +900,13 @@ class TestCancelAPIServer:
         process_start = str(proc_obj.create_time())
         apply_id = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            query_str = f"INSERT INTO applystatus (applyid, status, rollbackstatus, processid, executioncommand, processstartedat) VALUES ('{apply_id}', '{Result.CANCELED}', '{Result.IN_PROGRESS}', {proc.pid}, '{"".join(execution_cmd)}', '{process_start}')"
-            cursor.execute(query=query_str)
+            query_str = """INSERT INTO applystatus
+                (applyid, status, rollbackstatus, processid, executioncommand, processstartedat)
+                VALUES (%s, %s, %s, %s, %s, %s)"""
+            cursor.execute(
+                query=query_str,
+                vars=(apply_id, Result.CANCELED, Result.IN_PROGRESS, proc.pid, "".join(execution_cmd), process_start)
+            )
         init_db_instance.commit()
         # arrange
 
@@ -930,8 +955,13 @@ class TestCancelAPIServer:
         # Register data that does not match the execution process in the database.
         apply_id = create_randomname(IdParameter.LENGTH)
         with init_db_instance.cursor(cursor_factory=DictCursor) as cursor:
-            query_str = f"INSERT INTO applystatus (applyid, status, rollbackstatus, processid, executioncommand, processstartedat) VALUES ('{apply_id}', '{Result.CANCELED}', '{Result.IN_PROGRESS}', {proc.pid}, '{register_executioncommand}', '{register_processstartedat}')"
-            cursor.execute(query=query_str)
+            query_str = """INSERT INTO applystatus
+                (applyid, status, rollbackstatus, processid, executioncommand, processstartedat)
+                VALUES (%s, %s, %s, %s, %s, %s)"""
+            cursor.execute(
+                query=query_str,
+                vars=(apply_id, Result.CANCELED, Result.IN_PROGRESS, proc.pid, register_executioncommand, register_processstartedat)
+            )
         init_db_instance.commit()
         # arrange
 
@@ -2786,15 +2816,25 @@ def get_applyID():
 class TestMigrateAPIServer:
 
     @pytest.mark.usefixtures("migration_server_fixture")
-    def test_execute_migration_success(self, init_db_instance):
+    @pytest.mark.parametrize("gpu_key", ["gpu", "GPU", "gpU"])
+    def test_execute_migration_success(self, init_db_instance, httpserver, gpu_key):
         # arrange
-        response = client.post("/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA)
+        req_json = (
+            migration.MIGRATION_IN_DATA
+            if gpu_key == "gpu"
+            else _rename_gpu_key(migration.MIGRATION_IN_DATA, gpu_key)
+        )
+
+        response = client.post("/cdim/api/v1/migration-procedures", json=req_json)
         resp_data = json.loads(response.content)
 
         # assert
         assert response.status_code == 200
         assert resp_data.get("procedures") is not None
         assert resp_data.get("procedures") == migration.MIGRATION_API_RESP_DATA
+
+        migration_req = httpserver.log[2][0]
+        assert migration_req.json["desiredLayout"]["nodes"] == req_json["desiredLayout"]["nodes"]
 
     @pytest.mark.usefixtures("migration_server_fixture_multi")
     def test_execute_migration_success_when_multiple_current_nodes(self, init_db_instance):
@@ -2877,6 +2917,22 @@ class TestMigrateAPIServer:
         assert response.status_code == 404
         error_response = json.loads(response.content.decode())
         assert error_response["code"] == "E50010"
+
+    @pytest.mark.usefixtures("migration_server_fixture_nodeid_specified")
+    def test_execute_migration_failure_when_gpu_format_invalid(self, init_db_instance):
+        # arrange
+        response = client.post(
+            "/cdim/api/v1/migration-procedures", json=migration.MIGRATION_IN_DATA_WITH_INVALID_GPU_FORMAT
+        )
+
+        # assert
+        assert response.status_code == 400
+        error_response = json.loads(response.content.decode())
+        assert error_response["code"] == "E50001"
+        assert (
+            error_response["message"]
+            == "Unexpected strings {'deviceIDs': ['f6d7c8a9-b0c1-2d3e-4f5a-6b7c8d9e0f1a']} is not of type 'array'"
+        )
 
     def test_execute_migration_failure_when_failed_to_load_config_file(self, mocker):
 

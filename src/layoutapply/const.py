@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -128,8 +128,8 @@ class ApiUri:
 
     # URI for LayoutApplyAPI call
     POWEROFF_API = "http://{}:{}/{}/devices/{}/power"
-    CONNECT_API = "http://{}:{}/{}/cpu/{}/aggregations"
-    DISCONNECT_API = "http://{}:{}/{}/cpu/{}/aggregations"
+    CONNECT_API = "http://{}:{}/{}/devices/{}/aggregations"
+    DISCONNECT_API = "http://{}:{}/{}/devices/{}/aggregations"
     POWERON_API = "http://{}:{}/{}/devices/{}/power"
     ISOSBOOT_API = "http://{}:{}/{}/cpu/{}/is-os-ready"
     EXTENDED_PROCEDURE_API = "http://{}:{}/{}/extended-procedure"
@@ -143,6 +143,7 @@ class ApiUri:
     GET_AVAILABLE_RESOURCES_API = "http://{}:{}/{}/resources/available"
     # URI for GetServiceInformationAPI call
     GET_EXTENDED_PROCEDURE_API = "http://{}:{}/{}/extended-procedure/{}"
+
 
 @_simple_enum(StrEnum)
 class Result:

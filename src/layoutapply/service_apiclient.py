@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -12,6 +12,10 @@
 # License for the specific language governing permissions and limitations
 #  under the License.
 """API client package"""
+
+# Note: This feature is experimental and requires an additional
+# component that is not currently available in the public release.
+# This API may change in future versions.
 
 import copy
 import json
@@ -43,24 +47,32 @@ class ServiceAPIBase(AbstractAPIBase):
 
     def __init__(  # pylint: disable=C0103
         self,
-        workflow_manager_conf: dict,
         logger_args: dict,
+        server_connection_conf: dict,
+        features_conf: dict,
         applyID: str = None,
+        workflow_manager_conf: dict = None,
     ) -> None:
         """Constructor
 
         Args:
-            workflow_manager_conf (dict): Configuration for workflow manager
             logger_args (dict): Arguments for Logger
+            server_connection_conf (dict): Configuration for server connection
+            features_conf (dict): Configuration for features
             applyID (str): layoutapply ID
+            workflow_manager_conf (dict): Configuration for workflow manager
         """
-        self.host = workflow_manager_conf.get("host")
-        self.port = workflow_manager_conf.get("port")
-        self.uri = workflow_manager_conf.get("uri")
-        self.timeout = workflow_manager_conf.get("timeout")
-        extended_procedure_conf = workflow_manager_conf.get("extended-procedure")
-        self.retry_interval = extended_procedure_conf.get("retry").get("default").get("interval")
-        self.retry_max_count = extended_procedure_conf.get("retry").get("default").get("max_count")
+        if workflow_manager_conf is not None:
+            self.host = workflow_manager_conf.get("host")
+            self.port = workflow_manager_conf.get("port")
+            self.uri = workflow_manager_conf.get("uri")
+            self.timeout = workflow_manager_conf.get("timeout")
+            extended_procedure_conf = workflow_manager_conf.get("extended-procedure")
+            self.retry_interval = extended_procedure_conf.get("retry").get("default").get("interval")
+            self.retry_max_count = extended_procedure_conf.get("retry").get("default").get("max_count")
+        self.conn_retry_interval = server_connection_conf.get("retry").get("interval")
+        self.conn_retry_max_count = server_connection_conf.get("retry").get("max_count")
+        self.service_exec_flg = features_conf.get("workflow_manager")
         self.detail = Details()
         self.logger = None
         self.logger_args = logger_args
@@ -70,7 +82,7 @@ class ServiceAPIBase(AbstractAPIBase):
         self.is_suspended = False
         self.recent_request_uri = None
         self.applyID = applyID  # pylint: disable=C0103
-        super().__init__(self.logger_args)
+        super().__init__(self.logger_args, self.conn_retry_interval, self.conn_retry_max_count)
 
     def execute(self, procedure: Procedure) -> Details:
         """The execute method sends an API request with retry logic,
@@ -79,8 +91,9 @@ class ServiceAPIBase(AbstractAPIBase):
         Args:
             procedure (Procedure): Procedure object
         Returns:
-
-            Details: Execution result details
+            tuple[Details, bool]: detail, is_suspended
+            detail (Details): Execution result details
+            is_suspended (bool): Suspension status
         """
         self._set_logger()
 
@@ -90,12 +103,18 @@ class ServiceAPIBase(AbstractAPIBase):
         self.logger.info(f"Start operationID:[{procedure.operationID}]")
         code, body = self._requests_wrapper(procedure)
         if code != HTTPStatus.ACCEPTED and self.exception_flg is False:
-            self.logger.error(f"[E40004]{FailedRequestError(code, body).message}", stack_info=False)
+            self.logger.error(
+                f"[E40004]{FailedRequestError(code, body).message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
             self.logger.info(f"operationID[{procedure.operationID}] has been retried. retry_count[{cnt}]")
             code, body = self._retry_request(procedure, self.retry_max_count, self.retry_interval, code, body)
             if code != HTTPStatus.ACCEPTED:
                 self.is_suspended = True
-                self.logger.error(f"[E40025]{SuspendProcessException().message}", stack_info=False)
+                self.logger.error(
+                    f"[E40025]{SuspendProcessException().message}, operationID:[{procedure.operationID}]",
+                    stack_info=False,
+                )
 
         self._set_detail(code, body, procedure)
         if self.tmp_log_handler:
@@ -113,7 +132,10 @@ class ServiceAPIBase(AbstractAPIBase):
         """
         self.detail.status = Result.COMPLETED if code == HTTPStatus.ACCEPTED else Result.FAILED
         if code != HTTPStatus.ACCEPTED:
-            self.logger.error(f"[E40004]{FailedRequestError(code, body).message}", stack_info=False)
+            self.logger.error(
+                f"[E40004]{FailedRequestError(code, body).message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
         self.detail.operationID = procedure.operationID
         self.detail.responseBody = body
         self.detail.statusCode = code
@@ -124,7 +146,7 @@ class ServiceAPIBase(AbstractAPIBase):
         Args:
             procedure (Procedure): Procedure object
         Returns:
-
+            tuple[int, Any]: code, body
             code: Response code from the last request of the retry process
             body: Response body from the last request of the retry process
         """
@@ -173,6 +195,7 @@ class ServiceAPIBase(AbstractAPIBase):
             code: Response code from initial execution
             body: Response body from initial execution
         Returns:
+            tuple[int, Any]: code, body
             code: Response code from the last request of the retry process
             body: Response body from the last request of the retry process
         """
@@ -182,10 +205,12 @@ class ServiceAPIBase(AbstractAPIBase):
             code, body = self._requests_wrapper(procedure)
             if code == HTTPStatus.ACCEPTED or self.exception_flg is True:
                 break
-            else:
-                self.logger.error(f"[E40004]{FailedRequestError(code, body).message}", stack_info=True)
-                self.logger.info(f"operationID[{procedure.operationID}] has been retried. retry_count[{cnt + 1}]")
-                cnt += 1
+            self.logger.error(
+                f"[E40004]{FailedRequestError(code, body).message}, operationID:[{procedure.operationID}]",
+                stack_info=True,
+            )
+            self.logger.info(f"operationID[{procedure.operationID}] has been retried. retry_count[{cnt + 1}]")
+            cnt += 1
         return code, body
 
     @classmethod
@@ -245,20 +270,27 @@ class GetServiceInformationAPI(ServiceAPIBase):
 
     def __init__(
         self,
-        workflow_manager_conf: dict,
         logger_args: dict,
+        server_connection_conf: dict,
+        features_conf: dict,
+        workflow_manager_conf: dict = None,
     ) -> None:  # pylint: disable = W0246
         """Constructor
 
         Args:
-            workflow_manager_conf (dict): Configuration for workflow manager
             logger_args (dict): Arguments for Logger
+            server_connection_conf (dict): Configuration for server connection
+            features_conf (dict): Configuration for features
+            workflow_manager_conf (dict): Configuration for workflow manager
         """
-        super().__init__(workflow_manager_conf, logger_args)
-        extended_procedure_conf = workflow_manager_conf.get("extended-procedure")
-        polling_conf = extended_procedure_conf.get("polling")
-        self.interval = polling_conf.get("interval")
-        self.count = polling_conf.get("count")
+        super().__init__(
+            logger_args, server_connection_conf, features_conf, workflow_manager_conf=workflow_manager_conf
+        )
+        if workflow_manager_conf is not None:
+            extended_procedure_conf = workflow_manager_conf.get("extended-procedure")
+            polling_conf = extended_procedure_conf.get("polling")
+            self.interval = polling_conf.get("interval")
+            self.count = polling_conf.get("count")
         self.extended_procedure_id = None
 
     def _requests(self, procedure: Procedure):
@@ -278,10 +310,14 @@ class GetServiceInformationAPI(ServiceAPIBase):
             (
                 f"Start request. url:[{get_service_information_uri}], ",
                 f"method:[{get_service_information_method}]",
+                f"operationID:[{procedure.operationID}]",
             )
         )
         response = self._get(url=get_service_information_uri, timeout_sec=self.timeout, headers=ApiHeaders)
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self.logger.info(
+            f"Request completed. status:[{response.status_code}], response[{response.text}], "
+            f"operationID:[{procedure.operationID}]"
+        )
 
         return response
 
@@ -304,10 +340,13 @@ class GetServiceInformationAPI(ServiceAPIBase):
             except ValidationError as err:
                 code = HTTPStatus.BAD_REQUEST
                 error_message = err.message.split("\n")[-1]
-                self.logger.error(f"[E40001]{error_message}", stack_info=False)
+                self.logger.error(f"[E40001]{error_message}, operationID:[{procedure.operationID}]", stack_info=False)
 
         if code != HTTPStatus.OK:
-            self.logger.error(f"[E40034]{FailedGetServiceInfoException().message}", stack_info=False)
+            self.logger.error(
+                f"[E40034]{FailedGetServiceInfoException().message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
 
         return {"code": code, "service_information": body}
 
@@ -317,24 +356,30 @@ class ExtendedProcedureAPIBase(ServiceAPIBase):
 
     def __init__(
         self,
-        workflow_manager_conf: dict,
         logger_args: dict,
+        server_connection_conf: dict,
+        features_conf: dict,
         applyID: str = None,
+        workflow_manager_conf: dict = None,
     ) -> None:
         """Constructor
 
         Args:
-            workflow_manager_conf (dict): Configuration for workflow manager
             logger_args (dict): Arguments for Logger
+            server_connection_conf (dict): Configuration for server connection
+            features_conf (dict): Configuration for features
             applyID (str): layoutapply ID
+            workflow_manager_conf (dict): Configuration for workflow manager
         """
-        super().__init__(workflow_manager_conf, logger_args, applyID)
-        self.get_service_api = GetServiceInformationAPI(workflow_manager_conf, logger_args)
-        extended_procedure_conf = workflow_manager_conf.get("extended-procedure")
-        polling_conf = extended_procedure_conf.get("polling")
-
-        self.interval = polling_conf.get("interval")
-        self.count = polling_conf.get("count")
+        super().__init__(logger_args, server_connection_conf, features_conf, applyID, workflow_manager_conf)
+        self.get_service_api = GetServiceInformationAPI(
+            logger_args, server_connection_conf, features_conf, workflow_manager_conf
+        )
+        if workflow_manager_conf is not None:
+            extended_procedure_conf = workflow_manager_conf.get("extended-procedure")
+            polling_conf = extended_procedure_conf.get("polling")
+            self.interval = polling_conf.get("interval")
+            self.count = polling_conf.get("count")
 
     def _requests(self, procedure: Procedure):
         """Send a request to the service API.
@@ -358,12 +403,16 @@ class ExtendedProcedureAPIBase(ServiceAPIBase):
                 f"Start request. url:[{self.detail.uri}], ",
                 f"method:[{self.detail.method}]",
                 f"request body:[{self.detail.requestBody}]",
+                f"operationID:[{procedure.operationID}]",
             )
         )
         response = self._post(
             url=self.detail.uri, data=self.detail.requestBody, timeout_sec=self.timeout, headers=ApiHeaders
         )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self.logger.info(
+            f"Request completed. status:[{response.status_code}], response[{response.text}], "
+            f"operationID:[{procedure.operationID}]"
+        )
         return response
 
     def execute(self, procedure: Procedure) -> Details:
@@ -373,27 +422,40 @@ class ExtendedProcedureAPIBase(ServiceAPIBase):
             procedure (Procedure): Procedure object
 
         Returns:
-            Details: Execution result of get service information API
+            tuple[Details, bool]: detail, is_suspended
+            detail (Details): Execution result of get service information API
+            is_suspended (bool): Suspension status
         """
         self._set_logger()
         self.detail.startedAt = get_str_now()
-        super().execute(procedure)
-        extended_procedure_id = None
+        if self.service_exec_flg:
+            super().execute(procedure)
+            extended_procedure_id = None
 
-        if self.detail.status == Result.COMPLETED:
-            if isinstance(self.detail.responseBody, dict) and "extendedProcedureID" in self.detail.responseBody:
-                extended_procedure_id = self.detail.responseBody.get("extendedProcedureID")
-                self.get_service_api.extended_procedure_id = extended_procedure_id
-                self.logger.info(f"extendedProcedureID: [{extended_procedure_id}]")
+            if self.detail.status == Result.COMPLETED:
+                if isinstance(self.detail.responseBody, dict) and "extendedProcedureID" in self.detail.responseBody:
+                    extended_procedure_id = self.detail.responseBody.get("extendedProcedureID")
+                    self.get_service_api.extended_procedure_id = extended_procedure_id
+                    self.logger.info(
+                        f"extendedProcedureID: [{extended_procedure_id}], operationID:[{procedure.operationID}]"
+                    )
 
-            is_expected, _, service_state = self._check_service_status(
-                self.count, self.interval, self.get_service_api, procedure
+                is_expected, _, service_state = self._check_service_status(
+                    self.count, self.interval, self.get_service_api, procedure
+                )
+                if is_expected is False:
+                    exc = ExtendedProcedurePollingExceededException(procedure.targetRequestInstanceID, service_state)
+                    self.logger.error(f"[E40033]{exc.message}, operationID:[{procedure.operationID}]", stack_info=False)
+                    self.detail.status = Result.FAILED
+                    self.detail.responseBody = {"code": "E40033", "message": exc.message}
+        else:
+            skip_message = (
+                f"Operation {procedure.operation} is skipped because features.workflow_manager is set to False"
             )
-            if is_expected is False:
-                exc = ExtendedProcedurePollingExceededException(procedure.targetRequestInstanceID, service_state)
-                self.logger.error(f"[E40033]{exc.message}", stack_info=False)
-                self.detail.status = Result.FAILED
-                self.detail.responseBody = {"code": "E40033", "message": exc.message}
+            self.logger.info(f"{skip_message}, operationID:[{procedure.operationID}]")
+            self.detail.status = Result.COMPLETED
+            self.detail.operationID = procedure.operationID
+            self.detail.responseBody = {"message": skip_message}
         self.detail.endedAt = get_str_now()
 
         return self.detail, self.is_suspended

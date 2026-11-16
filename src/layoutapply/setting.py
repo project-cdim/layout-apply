@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -200,17 +200,19 @@ class LayoutApplyConfig(BaseConfig):
             "timeout": 60,
         }
 
-        timeout_conf = read_conf = self._config.get("workflow_manager")
-        polling_conf = read_conf.get("extended-procedure").get("polling", {})
-        retry_conf = read_conf.get("extended-procedure").get("retry", {})
-        read_conf["timeout"] = default_workflow_manager_conf["timeout"]
-        read_conf["extended-procedure"] = default_workflow_manager_conf["extended-procedure"]
-        _set_timeout(read_conf, timeout_conf)
-        if polling_conf:
-            _set_polling_count(read_conf["extended-procedure"], polling_conf)
-            _set_polling_interval(read_conf["extended-procedure"], polling_conf)
-        if retry_conf.get("default"):
-            _set_retry_default(read_conf["extended-procedure"], retry_conf)
+        read_conf = self._config.get("workflow_manager", None)
+        if read_conf is not None:
+            timeout_conf = read_conf
+            polling_conf = read_conf.get("extended-procedure").get("polling", {})
+            retry_conf = read_conf.get("extended-procedure").get("retry", {})
+            read_conf["timeout"] = default_workflow_manager_conf["timeout"]
+            read_conf["extended-procedure"] = default_workflow_manager_conf["extended-procedure"]
+            _set_timeout(read_conf, timeout_conf)
+            if polling_conf:
+                _set_polling_count(read_conf["extended-procedure"], polling_conf)
+                _set_polling_interval(read_conf["extended-procedure"], polling_conf)
+            if retry_conf.get("default"):
+                _set_retry_default(read_conf["extended-procedure"], retry_conf)
 
         return read_conf
 
@@ -366,6 +368,18 @@ class LayoutApplyConfig(BaseConfig):
             dict: Settings group of message_broker
         """
         return self._config.get("message_broker", {})
+
+    @property
+    def features(self) -> dict:
+        """Configuration information features settings
+
+        Returns:
+            dict: Configuration information features settings group.
+        """
+        conf = {}
+        read_conf = self._config.get("features", {})
+        conf["workflow_manager"] = read_conf.get("workflow_manager", False)
+        return conf
 
 
 def _set_specs_polling_count(read_conf: dict, operation: str, polling_conf: dict):

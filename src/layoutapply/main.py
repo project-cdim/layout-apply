@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -14,7 +14,8 @@
 """Main routine"""
 
 import copy
-from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, wait
+from concurrent.futures.process import ProcessPoolExecutor
 from dataclasses import asdict
 from typing import Generator
 
@@ -22,7 +23,13 @@ from layoutapply.apiclient import ConnectAPI, DisconnectAPI, PowerOffAPI, PowerO
 from layoutapply.common.logger import Logger
 from layoutapply.const import Action, ApiExecuteResultIdx, Operation, Result
 from layoutapply.custom_exceptions import FailedExecuteLayoutApplyError
-from layoutapply.data import Details, Procedure, details_dict_factory, get_procedure_list, procedure_dict_factory
+from layoutapply.data import (  # noqa: E402
+    Details,
+    Procedure,
+    details_dict_factory,
+    get_procedure_list,
+    procedure_dict_factory,
+)
 from layoutapply.db import DbAccess, UpdateOption
 from layoutapply.publisher import MessagePublisheClient
 from layoutapply.service_apiclient import StartAPI, StopAPI
@@ -272,7 +279,6 @@ def _update_layoutapply(  # pylint: disable=C0103
     resume_procedures_list = []
     rollback_status = ""
     rollback_result = []
-    resume_result = []
     resume_origin_proc_list = copy.deepcopy(origin_proc_list)
     resume_executed_list = copy.deepcopy(executed_list)
 
@@ -296,17 +302,9 @@ def _update_layoutapply(  # pylint: disable=C0103
 
             resume_origin_proc_list = get_procedure_list(input_procedure)
             resume_executed_list = rollback_executed_list
-    if action == Action.RESUME:
-        # Set the restart results, migration procedure to exclude from the update targets,
-        # and initialize the reflected results.
-        resume_result = copy.deepcopy(apply_result)
-        procedure, apply_result = None, []
-    if action == Action.ROLLBACK_RESUME:
-        # Resetting the restart results and rollback state, excluding the migration steps and
-        # results from the update targets, and initializing the reflection results and state.
-        resume_result = copy.deepcopy(apply_result)
-        rollback_status = copy.deepcopy(result)
-        procedure, apply_result, result = None, [], ""
+    procedure, apply_result, result, rollback_status, resume_result = _update_layoutapply_resume_actions(
+        action, procedure, apply_result, result, rollback_status
+    )
     if Result.SUSPENDED in (result, rollback_status):
         resume_procedure = _create_resume_proc(resume_origin_proc_list, resume_executed_list)
         resume_procedures_list = [asdict(i, dict_factory=procedure_dict_factory) for i in resume_procedure]
@@ -324,6 +322,40 @@ def _update_layoutapply(  # pylint: disable=C0103
             resume_result=resume_result,
         )
     )
+
+
+def _update_layoutapply_resume_actions(
+    action,
+    procedure,
+    apply_result,
+    result,
+    rollback_status,
+):
+    """Update layoutapply by resume
+
+    Args:
+        action (str): action type. apply or resume. If not specified, apply action.
+        procedure (dict): Migration procedure
+        apply_result (list): applyresult
+        result (str): executed result
+        rollback_status (str): executed rollback result
+    Returns:
+        procedure (dict): Migration procedure
+        apply_result (list): applyresult
+        result (str): executed result
+        rollback_status (str): executed rollback result
+        resume_result (list): resumeresult
+    """
+
+    resume_result = []
+    if action == Action.RESUME:
+        resume_result = copy.deepcopy(apply_result)
+        procedure, apply_result = None, []
+    if action == Action.ROLLBACK_RESUME:
+        resume_result = copy.deepcopy(apply_result)
+        rollback_status = copy.deepcopy(result)
+        procedure, apply_result, result = None, [], ""
+    return procedure, apply_result, result, rollback_status, resume_result
 
 
 def _update_layoutapply_result(  # pylint: disable=C0103
@@ -556,6 +588,7 @@ def _create_task(  # pylint: disable=C0103
         config (LayoutApplyConfig) : Configuration information
         applyID (str): layoutapply ID
     """
+    api_config = None
     # Change the setting values and call class according to the operation
     match procedure.operation:
         case Operation.POWEROFF:
@@ -578,11 +611,34 @@ def _create_task(  # pylint: disable=C0103
         case Operation.STOP:
             api_obj = StopAPI
 
+    args = _create_args(procedure, config, applyID, api_config)
+    instance = api_obj(**args)
+
+    return executor.submit(instance.execute, procedure)
+
+
+def _create_args(
+    procedure: Procedure, config: LayoutApplyConfig, applyID: str, api_config: list  # pylint: disable=C0103
+) -> dict:
+    """Create a argument to API
+
+    Args:
+        procedure (Procedure): Feasible migration procedure
+        config (LayoutApplyConfig) : Configuration information
+        applyID (str): layoutapply ID
+        api_config (list): API configuration
+
+    Returns:
+        dict: API argument
+    """
+
     if procedure.operation == Operation.START or procedure.operation == Operation.STOP:
         args = {
-            "workflow_manager_conf": config.workflow_manager,
             "logger_args": config.log_config,
+            "server_connection_conf": config.server_connection,
+            "features_conf": config.features,
             "applyID": applyID,
+            "workflow_manager_conf": config.workflow_manager,
         }
     # Generate a task call instance
     else:
@@ -593,9 +649,7 @@ def _create_task(  # pylint: disable=C0103
             "logger_args": config.log_config,
             "server_connection_conf": config.server_connection,
         }
-    instance = api_obj(**args)
-
-    return executor.submit(instance.execute, procedure)
+    return args
 
 
 def _create_rollback_proc(procedure_list: list[Procedure], executed_list: list[Details]) -> list[Procedure]:

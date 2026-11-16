@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -295,6 +295,31 @@ MIGRATION_IN_DATA = {
                     "memory0123456789": {"deviceIDs": ["035AA32D-6C3F-488E-9602-62286A509288"]},
                     "storage": {"deviceIDs": ["42243124-9655-4B12-B638-A15BFE021065"]},
                     "networkInterface": {"deviceIDs": ["0E9A2838-6AA9-40D2-B3E0-EA7B15E8F18D"]},
+                    "gpu": [{"deviceID": "f6d7c8a9-b0c1-2d3e-4f5a-6b7c8d9e0f1a"}],
+                }
+            },
+        ]
+    },
+}
+
+MIGRATION_IN_DATA_WITH_INVALID_GPU_FORMAT = {
+    "desiredLayout": {
+        "nodes": [
+            {
+                "device": {
+                    "cpu": {"deviceIDs": ["3B4EBEEA-B6DD-45DA-8C8A-2CA2F8F728D6"]},
+                    "memory": {"deviceIDs": ["A4D1A195-4A54-11EF-A1DC-000C29C8CA82"]},
+                    "storage": {"deviceIDs": ["895DFB43-68CD-41D6-8996-EAC8D1EA1E3F"]},
+                    "networkInterface": {"deviceIDs": ["5DFB4893-C16D-4968-89D6-8D1EAECEA31F"]},
+                }
+            },
+            {
+                "device": {
+                    "cpu": {"deviceIDs": ["2CA6D4DF-2739-45BA-ACA4-6ABE93E81E15"]},
+                    "memory0123456789": {"deviceIDs": ["035AA32D-6C3F-488E-9602-62286A509288"]},
+                    "storage": {"deviceIDs": ["42243124-9655-4B12-B638-A15BFE021065"]},
+                    "networkInterface": {"deviceIDs": ["0E9A2838-6AA9-40D2-B3E0-EA7B15E8F18D"]},
+                    "gpu": {"deviceIDs": ["f6d7c8a9-b0c1-2d3e-4f5a-6b7c8d9e0f1a"]},
                 }
             },
         ]

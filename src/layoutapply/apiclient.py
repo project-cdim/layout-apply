@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -90,11 +90,11 @@ class HarwareManageAPIBase(AbstractAPIBase):
         Args:
             procedure (Procedure): Procedure object
         Returns:
-
-            Details: Execution result details
+            tuple[Details, bool]: detail, is_suspended
+            detail (Details): Execution result details
+            is_suspended (bool): Suspension status
         """
         self._set_logger()
-
         cnt: int = 0
         code: int = None
         is_retryng = False
@@ -103,7 +103,10 @@ class HarwareManageAPIBase(AbstractAPIBase):
         self.logger.info(f"Start operationID:[{procedure.operationID}]")
         code, body = self._requests_wrapper(procedure)
         if code != HTTPStatus.OK and self.exception_flg is False:
-            self.logger.error(f"[E40004]{FailedRequestError(code, body).message}", stack_info=False)
+            self.logger.error(
+                f"[E40004]{FailedRequestError(code, body).message}, " f"operationID:[{procedure.operationID}]",
+                stack_info=True,
+            )
             self.logger.info(f"operationID[{procedure.operationID}] has been retried. retry_count[{cnt}]")
             # Retry determination
             is_retryng, interval, max_count = self._is_retry_response(code, body)
@@ -113,7 +116,10 @@ class HarwareManageAPIBase(AbstractAPIBase):
             code, body = self._retry_request(procedure, max_count, interval, code, body)
             if code != HTTPStatus.OK:
                 self.is_suspended = True
-                self.logger.error(f"[E40025]{SuspendProcessException().message}", stack_info=False)
+                self.logger.error(
+                    f"[E40025]{SuspendProcessException().message}, operationID:[{procedure.operationID}]",
+                    stack_info=False,
+                )
 
         self._set_detail(code, body, procedure)
         if self.tmp_log_handler:
@@ -131,7 +137,10 @@ class HarwareManageAPIBase(AbstractAPIBase):
         """
         if code != HTTPStatus.OK:
             self.detail.status = Result.FAILED
-            self.logger.error(f"[E40004]{FailedRequestError(code, body).message}", stack_info=False)
+            self.logger.error(
+                f"[E40004]{FailedRequestError(code, body).message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
         else:
             self.detail.status = Result.COMPLETED
         self.detail.operationID = procedure.operationID
@@ -160,31 +169,23 @@ class HarwareManageAPIBase(AbstractAPIBase):
             code, body = HarwareManageAPIBase._parse_response(response)
         except exceptions.Timeout:
             exc = ConnectTimeoutError()
-            self.logger.error(f"[E40003]{exc.message} operationID:[{procedure.operationID}]", stack_info=True)
-            code = exc.status_code
-            body = {
-                "code": "E40003",
-                "message": exc.message,
-            }
-            self.exception_flg = True
+            code, body = exc.status_code, self._create_error_dict("E40003", exc.message)
+            self.logger.error(
+                f"[{body['code']}]{body['message']} " f"operationID:[{procedure.operationID}]", stack_info=True
+            )
         except exceptions.ConnectionError:
             exc = UrlNotFoundError(self.recent_request_uri)
-            self.logger.error(f"[E40007]{exc.message} operationID:[{procedure.operationID}]", stack_info=True)
-            code = exc.status_code
-            body = {
-                "code": "E40007",
-                "message": exc.message,
-            }
-            self.exception_flg = True
+            code, body = exc.status_code, self._create_error_dict("E40007", exc.message)
+            self.logger.error(
+                f"[{body['code']}]{body['message']} " f"operationID:[{procedure.operationID}]", stack_info=True
+            )
         except exceptions.RequestException as error:
             exc = UnexpectedRequestError(str(error))
-            self.logger.error(f"[E40008]{exc.message} operationID:[{procedure.operationID}]", stack_info=True)
-            code = exc.status_code
-            body = {
-                "code": "E40008",
-                "message": exc.message,
-            }
-            self.exception_flg = True
+            code, body = exc.status_code, self._create_error_dict("E40008", exc.message)
+            self.logger.error(
+                f"[{body['code']}]{body['message']} " f"operationID:[{procedure.operationID}]", stack_info=True
+            )
+
         return code, body
 
     def _requests(self, procedure: Procedure):
@@ -199,14 +200,15 @@ class HarwareManageAPIBase(AbstractAPIBase):
 
     def _is_retry_response(self, status_code: int, body: Any) -> dict:
         """Determine if a retry is necessary.
-           If the Response status_code matches the retry settings, it will be a target for retry
+        If the Response status_code matches the retry settings, it will be a target for retry
         Args:
             status_code (int): Response status code
             body (Any): Response message
         Returns:
+            tuple[bool, int, int]: ret, interval, max_count
             ret(bool): Retry determination
-            interval: Interval setting for the applicable retry target
-            max_count: Max count setting for the applicable retry target
+            interval(int): Interval setting for the applicable retry target
+            max_count(int): Max count setting for the applicable retry target
         """
         ret = False
         interval = None
@@ -231,6 +233,7 @@ class HarwareManageAPIBase(AbstractAPIBase):
             code: Response code from initial execution
             body: Response body from initial execution
         Returns:
+            tuple[int, Any]: code, body
             code: Response code from the last request of the retry process
             body: Response body from the last request of the retry process
         """
@@ -241,7 +244,10 @@ class HarwareManageAPIBase(AbstractAPIBase):
             if code == HTTPStatus.OK or self.exception_flg is True:
                 break
             else:
-                self.logger.error(f"[E40004]{FailedRequestError(code, body).message}", stack_info=True)
+                self.logger.error(
+                    f"[E40004]{FailedRequestError(code, body).message}, " f"operationID:[{procedure.operationID}]",
+                    stack_info=True,
+                )
                 self.logger.info(f"operationID[{procedure.operationID}] has been retried. retry_count[{cnt + 1}]")
                 cnt += 1
         return code, body
@@ -251,9 +257,9 @@ class HarwareManageAPIBase(AbstractAPIBase):
         """Analyze the response and return the HTTP status code and response body.
         If the response result is an error, a JSON object will be returned,
         so it will be returned as a dict.
+
         Args:
             response (Response): requests.Response object
-
         Returns:
             tuple[int, Any]: HTTP status code, response body
         """
@@ -277,9 +283,8 @@ class HarwareManageAPIBase(AbstractAPIBase):
             interval (int): Interval setting for polling
             get_info_obj (Any): API object for retrieving device information
             procedure (Procedure): Migration procedure
-
         Returns:
-            tuple[bool, bool str]: Whether the expected state was achieved, error flag, current power state
+            tuple[bool, None | dict, str]: Whether the expected state was achieved, error flag, current power state
         """
         cnt, power_state, is_expected_power_state, error_resp = 0, "", False, None
         while cnt != count:
@@ -296,8 +301,11 @@ class HarwareManageAPIBase(AbstractAPIBase):
             cnt += 1
             time.sleep(interval)
         if cnt == count:
-            self.logger.error(f"[E40029]{PowerStateNotChangeException(target_state, procedure.targetDeviceID,
-                                                                      power_state).message}", stack_info=False)
+            exc = PowerStateNotChangeException(target_state, procedure.targetDeviceID, power_state)
+            self.logger.error(
+                f"[E40029]{exc.message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
         return is_expected_power_state, error_resp, power_state
     # fmt: on
 
@@ -307,7 +315,6 @@ class HarwareManageAPIBase(AbstractAPIBase):
         Args:
             get_info_obj (Any): API object to get device information
             procedure (Procedure): Migration procedure
-
         Returns:
             bool: Whether the power operation is enabled
             Returns the response body of the information retrieval if the response code is other than 200
@@ -325,7 +332,6 @@ class HarwareManageAPIBase(AbstractAPIBase):
         Args:
             get_info_obj (Any): API object for obtaining device information
             procedure (Procedure): Migration procedure
-
         Returns:
             bool | None: Returns True if the device type is CPU, otherwise returns False.
             Returns None if the response code for obtaining device information is not 200.
@@ -343,6 +349,33 @@ class HarwareManageAPIBase(AbstractAPIBase):
         """
         self.detail.startedAt = started_at
         self.detail.endedAt = get_str_now()
+
+    def _log_request(self, uri: str, method: str, procedure: Procedure, body: dict = None):
+        """Log API request start"""
+        body_str = f", request body:[{body}]" if body else ""
+        self.logger.info(
+            f"Start request. url:[{uri}], method:[{method}]{body_str}, " f"operationID:[{procedure.operationID}]"
+        )
+
+    def _log_response(self, response, procedure: Procedure):
+        """Log API request completion"""
+        self.logger.info(f"Request completed. status:[{response.status_code}], operationID:[{procedure.operationID}]")
+
+    def _setup_request(
+        self, uri_template: str, method: str, procedure: Procedure, body: dict = None, use_cpu_id: bool = False
+    ):
+        """Setup common API request parameters"""
+        device_id = procedure.targetCPUID if use_cpu_id else procedure.targetDeviceID
+        self.detail.uri = uri_template.format(self.host, self.port, self.uri, device_id)
+        self.recent_request_uri = copy.deepcopy(self.detail.uri)
+        self.detail.method = method
+        self.detail.requestBody = body
+        return self.detail.uri
+
+    def _create_error_dict(self, code: str, message: str) -> dict:
+        """Create error response dictionary"""
+        self.exception_flg = True
+        return {"code": code, "message": message}
 
 
 class PowerOnAPI(HarwareManageAPIBase):
@@ -379,24 +412,12 @@ class PowerOnAPI(HarwareManageAPIBase):
         Returns:
             requests.Response: Response
         """
-        self.detail.uri = ApiUri.POWERON_API.format(self.host, self.port, self.uri, procedure.targetDeviceID)
-        self.recent_request_uri = copy.deepcopy(self.detail.uri)
-        self.detail.method = HTTPMethod.PUT
-        self.detail.requestBody = {"action": RequestBodyAction.POWERON}
-        self.logger.info(
-            (
-                f"Start request. url:[{self.detail.uri}], ",
-                f"method:[{self.detail.method}]",
-                f"request body:[{self.detail.requestBody}]",
-            )
-        )
-        response = self._put(
-            url=self.detail.uri,
-            data=self.detail.requestBody,
-            timeout_sec=self.timeout,
-            headers=ApiHeaders,
-        )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        action_str = RequestBodyAction.POWERON
+        request_body = {"action": action_str}
+        uri = self._setup_request(ApiUri.POWERON_API, HTTPMethod.PUT, procedure, request_body)
+        self._log_request(uri, HTTPMethod.PUT, procedure, self.detail.requestBody)
+        response = self._put(url=uri, data=request_body, timeout_sec=self.timeout, headers=ApiHeaders)
+        self._log_response(response, procedure)
         return response
 
     def execute(self, procedure: Procedure) -> Details:
@@ -404,34 +425,46 @@ class PowerOnAPI(HarwareManageAPIBase):
 
         Args:
             procedure (Procedure): Migration plan
-
         Returns:
-            Details: Execution results of Power ONAPI and OS Startup Confirmation API
+            tuple[Details, bool]: detail, is_suspended
+            detail (Details): Execution results of Power ONAPI and OS Startup Confirmation API
+            is_suspended (bool): Suspension status
         """
         self.detail.startedAt = get_str_now()
         super().execute(procedure)
         if self.detail.status == Result.COMPLETED:
-            is_os_boot_result: IsOsBoot = self.is_os_boot_api.execute(procedure)
-
-            # If the OS boot confirmation ends with the target skip code, proceed to the next migration step.
-            if (
-                is_os_boot_result.statusCode in self.is_os_boot_api.skip_status_codes
-                and is_os_boot_result.code in self.is_os_boot_api.skip_codes
-            ):
-                self.logger.info("Skip running OS startup confirmation API.", stack_info=True)
-            else:
-                status = is_os_boot_result.responseBody.get("status")
-                if (
-                    is_os_boot_result.statusCode != HTTPStatus.OK
-                    or status is None
-                    or status is False
-                    or isinstance(status, bool) is False
-                ):
-                    self.detail.status = Result.FAILED
-                self.detail.isOSBoot = asdict(is_os_boot_result, dict_factory=details_dict_factory)
+            self._execute_is_os_boot(procedure)
         self.detail.endedAt = get_str_now()
 
         return self.detail, self.is_suspended
+
+    def _execute_is_os_boot(self, procedure: Procedure):
+        """Execute OS boot confirmation API.
+
+        Args:
+            procedure (Procedure): Migration plan
+        """
+        is_os_boot_result: IsOsBoot = self.is_os_boot_api.execute(procedure)
+
+        # If the OS boot confirmation ends with the target skip code, proceed to the next migration step.
+        if (
+            is_os_boot_result.statusCode in self.is_os_boot_api.skip_status_codes
+            and is_os_boot_result.code in self.is_os_boot_api.skip_codes
+        ):
+            self.logger.info(
+                f"Skip running OS startup confirmation API. operationID:[{procedure.operationID}]",
+                stack_info=True,
+            )
+        else:
+            status = is_os_boot_result.responseBody.get("status")
+            if (
+                is_os_boot_result.statusCode != HTTPStatus.OK
+                or status is None
+                or status is False
+                or isinstance(status, bool) is False
+            ):
+                self.detail.status = Result.FAILED
+            self.detail.isOSBoot = asdict(is_os_boot_result, dict_factory=details_dict_factory)
 
 
 class IsOSBootAPI(HarwareManageAPIBase):
@@ -449,8 +482,10 @@ class IsOSBootAPI(HarwareManageAPIBase):
 
         Args:
             hardware_control_conf (dict): Hardware control function settings
+            get_info_conf (dict): Get information function settings
             api_config (dict): Retry settings for each API, etc.
             logger_args (dict): Logger argument
+            server_connection_conf (dict): Configuration for server connection
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.timeout = self.isosboot_conf.get("timeout")
@@ -478,11 +513,10 @@ class IsOSBootAPI(HarwareManageAPIBase):
         )
         self.recent_request_uri = copy.deepcopy(self.is_os_boot_detail.uri)
         self.logger.info(
-            (
-                f"Start request. url:[{self.is_os_boot_detail.uri}], ",
-                f"method:[{self.is_os_boot_detail.method}]",
-                f"queryParameter:[{self.is_os_boot_detail.queryParameter}]",
-            )
+            f"Start request. url:[{self.is_os_boot_detail.uri}], "
+            f"method:[{self.is_os_boot_detail.method}], "
+            f"queryParameter:[{self.is_os_boot_detail.queryParameter}], "
+            f"operationID:[{procedure.operationID}]"
         )
         response = self._get(
             url=self.is_os_boot_detail.uri,
@@ -490,7 +524,7 @@ class IsOSBootAPI(HarwareManageAPIBase):
             params=(self.is_os_boot_detail.queryParameter if self.is_os_boot_detail.queryParameter != "" else None),
             headers=ApiHeaders,
         )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self._log_response(response, procedure)
         return response
 
     def execute(self, procedure: Procedure) -> IsOsBoot:
@@ -510,12 +544,12 @@ class IsOSBootAPI(HarwareManageAPIBase):
         # If polling fails up to the limit, output an error log.
         if is_polling:
             exc = OSBootMaxRetriesExceededException(procedure.targetDeviceID)
-            self.logger.error(f"[E40021]{OsBootFailureException().message}", stack_info=False)
-            self.logger.error(f"[E40032]{exc.message}", stack_info=False)
-            body = {
-                "code": "E40032",
-                "message": exc.message,
-            }
+            self.logger.error(
+                f"[E40021]{OsBootFailureException().message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
+            self.logger.error(f"[E40032]{exc.message}, operationID:[{procedure.operationID}]", stack_info=False)
+            body = {"code": "E40032", "message": exc.message}
         self.is_os_boot_detail.statusCode = code
         try:
             body = json.loads(body)
@@ -532,9 +566,10 @@ class IsOSBootAPI(HarwareManageAPIBase):
             procedure (Procedure): Migration plan
 
         Returns:
-            code: is_os_boot response status code
-            body: is_os_boot response body
-            is_polling: polling flag. execute max polling Yes(True) or No(False).
+            tuple[int, dict, bool]: code, body, is_polling
+            code (int): is_os_boot response status code
+            body (dict): is_os_boot response body
+            is_polling (bool): polling flag. execute max polling Yes(True) or No(False).
 
         """
         cnt: int = 0
@@ -566,10 +601,10 @@ class IsOSBootAPI(HarwareManageAPIBase):
             is_polling (bool): polling flag
 
         Returns:
-            is_polling: polling flag. execute max polling Yes(True) or No(False).
-            cnt: count of polling
-            is_break: break flag
-
+            tuple[bool, int, bool]: is_polling, cnt, is_break
+            is_polling (bool): polling flag. execute max polling Yes(True) or No(False).
+            cnt (int): count of polling
+            is_break (bool): break flag
         """
         is_break = False
         if code == HTTPStatus.OK and status is False:
@@ -580,6 +615,7 @@ class IsOSBootAPI(HarwareManageAPIBase):
                     OS not started. status:[{status}], response[{body}],
                     device id:{procedure.targetDeviceID},
                     polling[count:{cnt}, limit:{self.polling_count}],
+                    operationID:[{procedure.operationID}]
                 """
             )
             time.sleep(self.polling_interval)
@@ -589,13 +625,17 @@ class IsOSBootAPI(HarwareManageAPIBase):
             self.logger.info(
                 f"""
                     The device is not a CPU. Skip running OS startup confirmation API.
-                    device id:{procedure.targetDeviceID},status:[{status}],response[{body}]
+                    device id:{procedure.targetDeviceID}, status:[{status}],
+                    response[{body}], operationID:[{procedure.operationID}]
                 """
             )
             is_break = True
         else:
             self.is_os_boot_detail.code = body.get("code", "")
-            self.logger.error(f"[E40021]{OsBootFailureException().message}", stack_info=False)
+            self.logger.error(
+                f"[E40021]{OsBootFailureException().message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
             is_break = True
 
         return is_polling, cnt, is_break
@@ -619,6 +659,7 @@ class PowerOffAPI(HarwareManageAPIBase):
             get_info_conf (dict): Get information function settings
             api_config (dict): Retry settings for each API, etc.
             logger_args (dict): Logger argument
+            server_connection_conf (dict): Configuration for server connection
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.get_info_api = GetDeviceInformationAPI(
@@ -637,24 +678,19 @@ class PowerOffAPI(HarwareManageAPIBase):
         Returns:
             requests.Response: Response
         """
-        self.detail.uri = ApiUri.POWEROFF_API.format(self.host, self.port, self.uri, procedure.targetDeviceID)
-        self.recent_request_uri = copy.deepcopy(self.detail.uri)
-        self.detail.method = HTTPMethod.PUT
-        self.detail.requestBody = {"action": RequestBodyAction.POWEROFF}
-        self.logger.info(
-            (
-                f"Start request. url:[{self.detail.uri}], ",
-                f"method:[{self.detail.method}]",
-                f"request body:[{self.detail.requestBody}]",
-            )
-        )
+        request_body = {"action": RequestBodyAction.POWEROFF}
+        uri = self._setup_request(ApiUri.POWEROFF_API, HTTPMethod.PUT, procedure, request_body)
+        self._log_request(uri, HTTPMethod.PUT, procedure, request_body)
         response = self._put(
             url=self.detail.uri,
             data=self.detail.requestBody,
             timeout_sec=self.timeout,
             headers=ApiHeaders,
         )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self.logger.info(
+            f"Request completed. status:[{response.status_code}], response[{response.text}], "
+            f"operationID:[{procedure.operationID}]"
+        )
         return response
 
     def execute(self, procedure: Procedure) -> Details:
@@ -664,7 +700,9 @@ class PowerOffAPI(HarwareManageAPIBase):
             procedure (Procedure): Migration plan
 
         Returns:
-            Details: Details of poweroff API implementation results
+            tuple[Details, bool]: detail, is_suspended
+            detail(Details): Details of poweroff API implementation results
+            is_suspended (bool): Suspension status
         """
 
         self._set_logger()
@@ -681,10 +719,7 @@ class PowerOffAPI(HarwareManageAPIBase):
                 if is_expected is False:
                     exc = PowerStateNotChangeException("Off", procedure.targetDeviceID, power_state)
                     self.detail.status = Result.FAILED
-                    self.detail.responseBody = {
-                        "code": "E40029",
-                        "message": exc.message,
-                    }
+                    self.detail.responseBody = self._create_error_dict("E40029", exc.message)
                 self.detail.getInformation = {"responseBody": {"powerState": power_state}}
             elif is_cpu is None:  # pragma: no cover
                 self._set_detail(HTTPStatus.INTERNAL_SERVER_ERROR, None, procedure)
@@ -708,9 +743,11 @@ class GetDeviceInformationAPI(HarwareManageAPIBase):
         """Constructor
 
         Args:
+            hardware_control_conf (dict): Hardware control function settings
             get_info_conf (dict): Hardware control function settings
             api_config (dict): Retry settings for each API, etc.
             logger_args (dict): Logger argument
+            server_connection_conf (dict): Configuration for server connection
         """
         super().__init__(hardware_control_conf, get_info_conf, api_config, logger_args, server_connection_conf)
         self.get_information_host = get_info_conf.get("host")
@@ -734,19 +771,13 @@ class GetDeviceInformationAPI(HarwareManageAPIBase):
             procedure.targetDeviceID,
         )
         self.recent_request_uri = copy.deepcopy(get_device_information_uri)
-        get_device_information_method = HTTPMethod.GET
-        self.logger.info(
-            (
-                f"Start request. url:[{get_device_information_uri}], ",
-                f"method:[{get_device_information_method}]",
-            )
-        )
+        self._log_request(get_device_information_uri, HTTPMethod.GET, procedure)
         response = self._get(
             url=get_device_information_uri,
             timeout_sec=self.get_information_timeout,
             headers=ApiHeaders,
         )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self._log_response(response, procedure)
         return response
 
     def execute(self, procedure: Procedure) -> dict:
@@ -770,10 +801,13 @@ class GetDeviceInformationAPI(HarwareManageAPIBase):
             except ValidationError as err:
                 code = HTTPStatus.BAD_REQUEST
                 error_message = err.message.split("\n")[-1]
-                self.logger.error(f"[E40001]{error_message}", stack_info=False)
+                self.logger.error(f"[E40001]{error_message}, operationID:[{procedure.operationID}]", stack_info=False)
 
         if code != HTTPStatus.OK:
-            self.logger.error(f"[E40023]{FailedGetDeviceInfoException().message}", stack_info=False)
+            self.logger.error(
+                f"[E40023]{FailedGetDeviceInfoException().message}, operationID:[{procedure.operationID}]",
+                stack_info=False,
+            )
 
         return {"code": code, "device_information": body}
 
@@ -804,27 +838,16 @@ class DisconnectAPI(HarwareManageAPIBase):
         Returns:
             requests.Response: Response
         """
-        self.detail.uri = ApiUri.DISCONNECT_API.format(self.host, self.port, self.uri, procedure.targetCPUID)
-        self.recent_request_uri = copy.deepcopy(self.detail.uri)
-        self.detail.method = HTTPMethod.PUT
-        self.detail.requestBody = {
-            "action": RequestBodyAction.DISCONNECT,
-            "deviceID": procedure.targetDeviceID,
-        }
-        self.logger.info(
-            (
-                f"Start request. url:[{self.detail.uri}], ",
-                f"method:[{self.detail.method}]",
-                f"request body:[{self.detail.requestBody}]",
-            )
-        )
+        request_body = {"action": RequestBodyAction.DISCONNECT, "destinationDeviceID": procedure.targetDeviceID}
+        uri = self._setup_request(ApiUri.DISCONNECT_API, HTTPMethod.PUT, procedure, request_body, use_cpu_id=True)
+        self._log_request(uri, HTTPMethod.PUT, procedure, request_body)
         response = self._put(
             url=self.detail.uri,
             data=self.detail.requestBody,
             timeout_sec=self.timeout,
             headers=ApiHeaders,
         )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self._log_response(response, procedure)
         return response
 
     def execute(self, procedure: Procedure) -> Details:
@@ -834,7 +857,9 @@ class DisconnectAPI(HarwareManageAPIBase):
             procedure (Procedure): Procedure object
 
         Returns:
-            Details: Execution result
+            tuple[Details, bool]: detail, is_suspended
+            detail (Details): Execution result
+            is_suspended (bool): Suspension status
         """
         self._set_logger()
         started_at = get_str_now()
@@ -897,32 +922,19 @@ class ConnectAPI(HarwareManageAPIBase):
             requests.Response: Response
         """
 
-        self.detail.uri = ApiUri.CONNECT_API.format(
-            self.host,
-            self.port,
-            self.uri,
-            procedure.targetCPUID,
-        )
-        self.recent_request_uri = copy.deepcopy(self.detail.uri)
-        self.detail.method = HTTPMethod.PUT
-        self.detail.requestBody = {
+        request_body = {
             "action": RequestBodyAction.CONNECT,
-            "deviceID": procedure.targetDeviceID,
+            "destinationDeviceID": procedure.targetDeviceID,
         }
-        self.logger.info(
-            (
-                f"Start request. url:[{self.detail.uri}], ",
-                f"method:[{self.detail.method}]",
-                f"request body:[{self.detail.requestBody}]",
-            )
-        )
+        uri = self._setup_request(ApiUri.CONNECT_API, HTTPMethod.PUT, procedure, request_body, use_cpu_id=True)
+        self._log_request(uri, HTTPMethod.PUT, procedure, request_body)
         response = self._put(
             url=self.detail.uri,
             data=self.detail.requestBody,
             timeout_sec=self.timeout,
             headers=ApiHeaders,
         )
-        self.logger.info(f"Request completed. status:[{response.status_code}], response[{response.text}]")
+        self._log_response(response, procedure)
         return response
 
     def execute(self, procedure: Procedure) -> Details:
@@ -932,7 +944,9 @@ class ConnectAPI(HarwareManageAPIBase):
             procedure (Procedure): Migration plan
 
         Returns:
-            Details: Details of boot API implementation results
+            tuple[Details, bool]: detail, is_suspended
+            detail (Details): Details of boot API implementation results
+            is_suspended (bool): Suspension status
         """
 
         self._set_logger()

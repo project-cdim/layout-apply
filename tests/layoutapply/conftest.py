@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -33,10 +33,11 @@ from tests.layoutapply.test_data.migration import (
     GET_AVAILABLE_RESOURCES_API_RESP,
     GET_AVAILABLE_RESOURCES_API_RESP_MULTI,
     MIGRATION_API_RESP_DATA,
+    MIGRATION_IN_DATA,
     NOTHING_NON_REMOVABLE_DEVICES_RESP,
 )
 
-OPERATION_URL = "cpu\/(.*)\/aggregations"
+OPERATION_URL = "devices\/(.*)\/aggregations"
 POWER_OPERATION_URL = "devices\/(.*)\/power"
 DEVICE_INFO_URL = "devices\/(.*)\/specs"
 CONF_NODES_URL = "nodes"
@@ -541,6 +542,11 @@ def is_postgresql_ready():
         return True
     except Exception:
         return False
+
+
+@pytest.fixture(scope="session", autouse=True)
+def docker_setup():
+    return ["down -v", "up --build -d"]
 
 
 @pytest.fixture

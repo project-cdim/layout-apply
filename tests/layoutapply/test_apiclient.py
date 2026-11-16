@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -50,8 +50,13 @@ class TestHarwareManageAPIBase:
     the test will only be conducted for the power-on API regarding this process.
     """
 
-    def test_common_can_request(self, httpserver: HTTPServer, init_db_instance):
+    def test_common_can_request(self, httpserver: HTTPServer, mocker, caplog, init_db_instance):
         # arrange
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        # logger.setLevel(logging.ERROR)
         config = LayoutApplyConfig()
         config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
@@ -104,9 +109,10 @@ class TestHarwareManageAPIBase:
             {"type": "CPU"}, status=200
         )
         targetDeviceID = str(uuid4())
+        operation_id = 1
         paylod = Procedure(
             **{
-                "operationID": 1,
+                "operationID": operation_id,
                 "operation": "boot",
                 "targetDeviceID": targetDeviceID,
                 "dependencies": [],
@@ -121,7 +127,7 @@ class TestHarwareManageAPIBase:
         start_deviceid = result.uri[index + 8 : index + 12]
 
         # assert
-        assert result.operationID == 1
+        assert result.operationID == operation_id
         assert result.method == "PUT"
         assert start_deviceid != "None"
         assert re.fullmatch(
@@ -133,6 +139,13 @@ class TestHarwareManageAPIBase:
         assert result.responseBody == ""
         assert result.status == "COMPLETED"
         assert result.statusCode == 200
+        # log check
+        log_messages = caplog.text
+        assert (
+            f"Start request. url:[http://{host}:{port}/{uri}/devices/{targetDeviceID}/power], method:[PUT], request body:[{{'action': <RequestBodyAction.POWERON: 'on'>}}], operationID:[{operation_id}]"
+            in log_messages
+        )
+        assert f"Request completed. status:[200], operationID:[{operation_id}]" in log_messages
 
     @pytest.mark.parametrize(
         "retry_status_code, retry_err_code, retry_targets",
@@ -489,8 +502,15 @@ class TestHarwareManageAPIBase:
         assert result.status == "FAILED"
         assert result.statusCode == 503
 
-    def test_common_no_retry_when_failure_code_not_for_retry(self, httpserver: HTTPServer, init_db_instance):
+    def test_common_no_retry_when_failure_code_not_for_retry(
+        self, httpserver: HTTPServer, mocker, caplog, init_db_instance
+    ):
         # arrange
+        mocker.patch("logging.config.dictConfig")
+        logger = logging.getLogger("logger.py")
+        logger.handlers.clear()
+        logger.addHandler(caplog.handler)
+        logger.setLevel(logging.ERROR)
         config = LayoutApplyConfig()
         config.load_log_configs()
         api_obj: HarwareManageAPIBase = PowerOnAPI(
@@ -552,9 +572,10 @@ class TestHarwareManageAPIBase:
         ).respond_with_json({"code": "retry2", "message": "Something Error."}, status=500)
 
         targetDeviceID = str(uuid4())
+        operation_id = 1
         paylod = Procedure(
             **{
-                "operationID": 1,
+                "operationID": operation_id,
                 "operation": "boot",
                 "targetDeviceID": targetDeviceID,
                 "dependencies": [],
@@ -565,7 +586,7 @@ class TestHarwareManageAPIBase:
         result: Details = execute_result[ApiExecuteResultIdx.DETAIL]
         httpserver.clear()
         # assert
-        assert result.operationID == 1
+        assert result.operationID == operation_id
         assert result.method == "PUT"
         assert result.requestBody == {"action": "on"}
         assert result.queryParameter == ""
@@ -575,6 +596,9 @@ class TestHarwareManageAPIBase:
         }
         assert result.status == "FAILED"
         assert result.statusCode == 503
+        # Check that error messages contain operationID
+        log_messages = caplog.text
+        assert "[E40004]" in log_messages and f"operationID:[{operation_id}]" in log_messages
 
     def test_common_retry_on_failure_when_status_code_not_for_retry(self, httpserver: HTTPServer, init_db_instance):
         # arrange
@@ -990,7 +1014,7 @@ class TestHarwareManageAPIBase:
             f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
             result.uri,
         )
-        assert result.requestBody == {"action": "connect", "deviceID": targetDeviceID}
+        assert result.requestBody == {"action": "connect", "destinationDeviceID": targetDeviceID}
         assert result.queryParameter == ""
         assert result.responseBody == ""
         assert result.status == "COMPLETED"
@@ -1166,7 +1190,7 @@ class TestHarwareManageAPIBase:
             f"http:\/\/{host}:{port}\/{uri}\/{OPERATION_URL}",
             result.uri,
         )
-        assert result.requestBody == {"action": "connect", "deviceID": targetDeviceID}
+        assert result.requestBody == {"action": "connect", "destinationDeviceID": targetDeviceID}
         assert result.queryParameter == ""
         assert result.responseBody == ""
         assert result.status == "COMPLETED"
@@ -1366,7 +1390,7 @@ class TestHarwareManageAPIBase:
         )
         assert result.requestBody == {
             "action": "disconnect",
-            "deviceID": targetDeviceID,
+            "destinationDeviceID": targetDeviceID,
         }
         assert result.queryParameter == ""
         assert result.responseBody == ""
@@ -1474,7 +1498,7 @@ class TestHarwareManageAPIBase:
         )
         assert result.requestBody == {
             "action": "disconnect",
-            "deviceID": targetDeviceID,
+            "destinationDeviceID": targetDeviceID,
         }
         assert result.queryParameter == ""
         assert result.responseBody == ""
@@ -1687,7 +1711,7 @@ class TestHarwareManageAPIBase:
         )
         assert result.requestBody == {
             "action": "disconnect",
-            "deviceID": targetDeviceID,
+            "destinationDeviceID": targetDeviceID,
         }
         assert result.queryParameter == ""
         assert result.responseBody == ""
@@ -2152,7 +2176,7 @@ class TestHarwareManageAPIBase:
         }
         assert result.requestBody == {
             "action": "disconnect",
-            "deviceID": targetDeviceID,
+            "destinationDeviceID": targetDeviceID,
         }
 
     @pytest.mark.parametrize(

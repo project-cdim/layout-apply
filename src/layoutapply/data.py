@@ -1,4 +1,4 @@
-# Copyright (C) 2025 NEC Corporation.
+# Copyright (C) 2025-2026 NEC Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -28,7 +28,6 @@ class Procedure:
     operation: str
     dependencies: list
     targetDeviceID: str = field(default=None)
-    targetServiceID: str = field(default=None)
     targetCPUID: str = field(default=None)
     targetRequestInstanceID: str = field(default=None)
 
@@ -48,8 +47,8 @@ class Procedure:
 
 def procedure_dict_factory(items: list[tuple[str, Any]]) -> dict[str, Any]:
     """Dict factory method of the Procedure class.
-    If the operation is boot or shutdown, do not include targetCPUID and targetServiceID in the Dict
-    If the operation is connect or disconnect, do not include targetServiceID in the Dict
+    If the operation is boot or shutdown, do not include targetCPUID and targetRequestInstanceID in the Dict
+    If the operation is connect or disconnect, do not include targetRequestInstanceID in the Dict
     If the operation is start or stop, do not include targetDeviceID in the Dict
 
     Args:
@@ -63,9 +62,9 @@ def procedure_dict_factory(items: list[tuple[str, Any]]) -> dict[str, Any]:
         adict[key] = value
     if adict["operation"] in (Operation.POWEROFF, Operation.POWERON):
         del adict["targetCPUID"]
-        del adict["targetServiceID"]
+        del adict["targetRequestInstanceID"]
     if adict["operation"] in (Operation.CONNECT, Operation.DISCONNECT):
-        del adict["targetServiceID"]
+        del adict["targetRequestInstanceID"]
     if adict["operation"] in (Operation.START, Operation.STOP):
         del adict["targetDeviceID"]
     return adict
